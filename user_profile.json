@@ -1,0 +1,5 @@
+{
+  "capital": 50000,
+  "riskTolerance": 0.02,
+  "minRR": 0.15
+}
