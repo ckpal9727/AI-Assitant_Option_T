@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import dynamic from 'next/dynamic';
 import { 
   TrendingUp, 
@@ -19,7 +19,10 @@ import {
   Percent,
   Calendar,
   Layers,
-  Sparkles
+  Sparkles,
+  Send,
+  MessageSquare,
+  Bot
 } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 
@@ -101,6 +104,18 @@ export default function Dashboard() {
   const [showAddModal, setShowAddModal] = useState(false);
   const [showSettingsModal, setShowSettingsModal] = useState(false);
 
+  // AI Chat states
+  const [chatMessages, setChatMessages] = useState([
+    {
+      role: 'assistant',
+      content: 'Hello! I am your AI Options Trading Assistant. I can check real-time price feeds, analyze Greeks from Delta Exchange, calculate spreads, validate risk limits, and log trades to your journal.\n\nClick one of the quick actions on the left or type your query below to get started!'
+    }
+  ]);
+  const [promptInput, setPromptInput] = useState('');
+  const [sendingPrompt, setSendingPrompt] = useState(false);
+  const [chatError, setChatError] = useState('');
+  const chatBottomRef = useRef(null);
+
   // Form states
   const [newTrade, setNewTrade] = useState({
     date: new Date().toISOString().split('T')[0],
@@ -122,7 +137,6 @@ export default function Dashboard() {
     notes: ''
   });
 
-  // Verify connection status
   const hasSupabase = !!supabase;
 
   // Load initial data
@@ -132,7 +146,6 @@ export default function Dashboard() {
         setIsDemo(false);
         await Promise.all([fetchTradesFromDB(), fetchProfileFromDB()]);
       } else {
-        // Fallback to demo
         setTrades(DEMO_TRADES);
         setProfile(DEMO_PROFILE);
         setLoadingTrades(false);
@@ -141,6 +154,13 @@ export default function Dashboard() {
     }
     init();
   }, [hasSupabase]);
+
+  // Scroll to bottom of chat when new messages arrive
+  useEffect(() => {
+    if (chatBottomRef.current) {
+      chatBottomRef.current.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [chatMessages, sendingPrompt]);
 
   // DB Fetching Functions
   async function fetchTradesFromDB() {
@@ -156,7 +176,6 @@ export default function Dashboard() {
       setTrades(data || []);
     } catch (e) {
       console.error('Failed to fetch trades:', e.message);
-      // Fallback to demo
       setTrades(DEMO_TRADES);
       setIsDemo(true);
     } finally {
@@ -201,6 +220,52 @@ export default function Dashboard() {
     } finally {
       setLoadingMarket(false);
       setRefreshingMarket(false);
+    }
+  }
+
+  // AI Chat handler
+  async function sendPrompt(customText) {
+    const text = customText || promptInput;
+    if (!text.trim() || sendingPrompt) return;
+
+    setPromptInput('');
+    setChatError('');
+    setSendingPrompt(true);
+
+    const userMessage = { role: 'user', content: text };
+    const updatedMessages = [...chatMessages, userMessage];
+    setChatMessages(updatedMessages);
+
+    try {
+      const res = await fetch('/api/agent', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ messages: updatedMessages })
+      });
+
+      const data = await res.json();
+      if (data.success) {
+        setChatMessages([...updatedMessages, { role: 'assistant', content: data.message }]);
+        
+        // Auto-refresh tables if agent performed operations
+        if (data.loggedTrade) {
+          if (!isDemo) {
+            await fetchTradesFromDB();
+          } else {
+            // Trigger local refresh if demo (creates visual response)
+            alert('Trade was logged! Running in Demo mode, refresh local list manually or connect Supabase.');
+          }
+        }
+        if (data.profileUpdated) {
+          await fetchProfileFromDB();
+        }
+      } else {
+        setChatError(data.error || 'Failed to get a response from the assistant.');
+      }
+    } catch (err) {
+      setChatError('Communication error: ' + err.message);
+    } finally {
+      setSendingPrompt(false);
     }
   }
 
@@ -369,6 +434,75 @@ export default function Dashboard() {
     setShowSettingsModal(true);
   };
 
+  // Markdown Parser
+  function parseInlineBold(text) {
+    const parts = text.split(/(\*\*.*?\*\*)/g);
+    return parts.map((part, idx) => {
+      if (part.startsWith('**') && part.endsWith('**')) {
+        return <strong key={idx} className="text-slate-100 font-bold">{part.slice(2, -2)}</strong>;
+      }
+      return part;
+    });
+  }
+
+  function renderMarkdown(text) {
+    if (!text) return null;
+    const lines = text.split('\n');
+    let inCodeBlock = false;
+    let codeLines = [];
+
+    return lines.map((line, idx) => {
+      if (line.startsWith('```')) {
+        if (inCodeBlock) {
+          inCodeBlock = false;
+          const codeText = codeLines.join('\n');
+          codeLines = [];
+          return (
+            <pre key={idx} className="bg-slate-950 border border-slate-900 rounded-lg p-3.5 font-mono text-xs text-slate-350 my-3 overflow-x-auto select-text">
+              <code>{codeText}</code>
+            </pre>
+          );
+        } else {
+          inCodeBlock = true;
+          return null;
+        }
+      }
+
+      if (inCodeBlock) {
+        codeLines.push(line);
+        return null;
+      }
+
+      if (line.startsWith('### ')) {
+        return <h4 key={idx} className="text-sm font-bold text-cyan-400 mt-4 mb-2">{parseInlineBold(line.slice(4))}</h4>;
+      }
+      if (line.startsWith('## ')) {
+        return <h3 key={idx} className="text-base font-bold text-transparent bg-clip-text bg-gradient-to-r from-cyan-400 to-indigo-300 mt-6 mb-3 border-b border-slate-800 pb-1">{parseInlineBold(line.slice(3))}</h3>;
+      }
+      if (line.startsWith('# ')) {
+        return <h2 key={idx} className="text-lg font-bold text-slate-100 mt-6 mb-4">{parseInlineBold(line.slice(2))}</h2>;
+      }
+
+      if (line.startsWith('- ') || line.startsWith('* ')) {
+        return (
+          <li key={idx} className="ml-4 list-disc text-slate-300 my-1 leading-relaxed">
+            {parseInlineBold(line.slice(2))}
+          </li>
+        );
+      }
+
+      if (line.trim() === '') {
+        return <div key={idx} className="h-2" />;
+      }
+
+      return (
+        <p key={idx} className="text-slate-300 my-1 leading-relaxed">
+          {parseInlineBold(line)}
+        </p>
+      );
+    });
+  }
+
   // P&L Calculations
   const resolvedTrades = trades.filter(t => t.result !== 'Pending');
   const totalPnL = resolvedTrades.reduce((acc, t) => acc + (t.pnl || 0), 0);
@@ -376,14 +510,12 @@ export default function Dashboard() {
   const winRate = resolvedTrades.length > 0 ? (winCount / resolvedTrades.length) * 100 : 0;
   const pendingCount = trades.filter(t => t.result === 'Pending').length;
 
-  // Chart data formatting
-  // Need to sort trades chronologically (ascending date) to display historical graph
   const chronologicalTrades = [...trades]
     .filter(t => t.result !== 'Pending')
     .sort((a, b) => new Date(a.date) - new Date(b.date));
 
   let currentSum = 0;
-  const chartData = chronologicalTrades.map((t, idx) => {
+  const chartData = chronologicalTrades.map((t) => {
     currentSum += (t.pnl || 0);
     return {
       name: t.date,
@@ -535,7 +667,7 @@ export default function Dashboard() {
           </div>
         </section>
 
-        {/* Chart & Quick Settings Section */}
+        {/* Chart & Profile Settings Section */}
         <section className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           {/* P&L Performance Graph */}
           <div className="bg-[#0B0F19]/70 backdrop-blur border border-slate-850 rounded-xl p-6 lg:col-span-2">
@@ -592,10 +724,141 @@ export default function Dashboard() {
           </div>
         </section>
 
+        {/* AI Trading Assistant Section */}
+        <section className="bg-[#0B0F19]/70 backdrop-blur border border-slate-850 rounded-xl p-6">
+          <div className="flex items-center justify-between mb-6 border-b border-slate-900 pb-3">
+            <h3 className="text-sm font-bold uppercase tracking-wider text-slate-350 flex items-center gap-1.5">
+              <Bot size={18} className="text-cyan-400 animate-pulse" />
+              <span>Interactive AI Trading Assistant</span>
+            </h3>
+            <span className="text-xs text-slate-500 font-semibold flex items-center gap-1">
+              <Sparkles size={12} className="text-indigo-400" /> Options reasoning agent
+            </span>
+          </div>
+
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            {/* Quick Actions Panel */}
+            <div className="lg:col-span-1 space-y-4">
+              <div className="bg-slate-900/60 border border-slate-800/80 rounded-xl p-4">
+                <h4 className="text-xs font-bold uppercase tracking-wider text-slate-400 mb-2">AI Agent Cockpit</h4>
+                <p className="text-xs text-slate-500 leading-relaxed mb-4">
+                  Deploy the Options reasoning agent directly from your dashboard. It scans live Delta Exchange quotes, computes greeks, builds strategy candidates, and evaluates lot sizes.
+                </p>
+
+                <div className="space-y-2">
+                  <button
+                    onClick={() => sendPrompt("Please analyze the current BTC market state and option chain, validate the candidates, and recommend the best strategy based on my profile.")}
+                    disabled={sendingPrompt}
+                    className="w-full text-left text-xs font-semibold px-3 py-2.5 border border-slate-800 hover:border-cyan-500/50 bg-[#161C2C]/30 hover:bg-[#1C253B]/50 rounded-lg transition text-cyan-400 flex items-center justify-between group cursor-pointer"
+                  >
+                    <span>✨ Recommend Options Strategy</span>
+                    <Plus size={12} className="opacity-0 group-hover:opacity-100 transition" />
+                  </button>
+
+                  <button
+                    onClick={() => sendPrompt("Analyze the ATM options Greeks, IV levels, and funding rate to explain the current market bias.")}
+                    disabled={sendingPrompt}
+                    className="w-full text-left text-xs font-semibold px-3 py-2.5 border border-slate-800 hover:border-indigo-500/50 bg-[#161C2C]/30 hover:bg-[#1C253B]/50 rounded-lg transition text-indigo-400 flex items-center justify-between group cursor-pointer"
+                  >
+                    <span>📊 Explain ATM Greeks & Bias</span>
+                    <Plus size={12} className="opacity-0 group-hover:opacity-100 transition" />
+                  </button>
+
+                  <button
+                    onClick={() => sendPrompt("Show my trade journal history and analyze if my risk sizing is consistent with my user profile.")}
+                    disabled={sendingPrompt}
+                    className="w-full text-left text-xs font-semibold px-3 py-2.5 border border-slate-800 hover:border-purple-500/50 bg-[#161C2C]/30 hover:bg-[#1C253B]/50 rounded-lg transition text-purple-400 flex items-center justify-between group cursor-pointer"
+                  >
+                    <span>📈 Evaluate Sizing & History</span>
+                    <Plus size={12} className="opacity-0 group-hover:opacity-100 transition" />
+                  </button>
+                </div>
+              </div>
+
+              <div className="bg-slate-900/60 border border-slate-800/80 rounded-xl p-4 text-[11px] text-slate-500 leading-relaxed">
+                💡 <strong>Tip:</strong> Ask the assistant to log trades in conversation (e.g. <em>"Log a trade. Strategy is Bull Put Spread, risk is $100, reward is $25..."</em>). The database logs will auto-sync on the dashboard!
+              </div>
+            </div>
+
+            {/* Chat Conversation Box */}
+            <div className="lg:col-span-2 flex flex-col h-[400px] border border-slate-850 rounded-xl bg-slate-950/30 overflow-hidden">
+              {/* Message History */}
+              <div className="flex-1 p-4 overflow-y-auto space-y-4 select-text">
+                {chatMessages.map((msg, idx) => {
+                  const isUser = msg.role === 'user';
+                  return (
+                    <div key={idx} className={`flex gap-3 ${isUser ? 'justify-end' : 'justify-start'}`}>
+                      {!isUser && (
+                        <div className="h-7 w-7 rounded-lg bg-gradient-to-tr from-cyan-500 to-indigo-500 flex items-center justify-center font-bold text-black shrink-0 text-xs shadow-md">
+                          AI
+                        </div>
+                      )}
+                      
+                      <div className={`p-3.5 rounded-2xl max-w-[85%] text-xs shadow-sm border ${
+                        isUser 
+                          ? 'bg-[#161C2C] text-slate-100 border-slate-700/40 rounded-tr-none' 
+                          : 'bg-[#0E1320]/60 text-slate-300 border-slate-850 rounded-tl-none space-y-2'
+                      }`}>
+                        {isUser ? msg.content : renderMarkdown(msg.content)}
+                      </div>
+                    </div>
+                  );
+                })}
+
+                {sendingPrompt && (
+                  <div className="flex gap-3 justify-start items-center">
+                    <div className="h-7 w-7 rounded-lg bg-gradient-to-tr from-cyan-500 to-indigo-500 flex items-center justify-center font-bold text-black shrink-0 text-xs shadow-md animate-pulse">
+                      AI
+                    </div>
+                    <div className="text-slate-500 text-xs italic flex items-center gap-2">
+                      <RotateCw size={12} className="animate-spin text-cyan-500" />
+                      AI is evaluating Option Chains & Greeks...
+                    </div>
+                  </div>
+                )}
+
+                {chatError && (
+                  <div className="bg-rose-500/10 border border-rose-500/20 text-rose-400 p-3 rounded-lg text-xs flex items-start gap-2">
+                    <AlertCircle size={14} className="shrink-0 mt-0.5" />
+                    <span>{chatError}</span>
+                  </div>
+                )}
+                
+                <div ref={chatBottomRef} />
+              </div>
+
+              {/* Chat Input */}
+              <form 
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  sendPrompt();
+                }}
+                className="p-3 border-t border-slate-900 bg-[#0E1320] flex gap-2"
+              >
+                <input
+                  type="text"
+                  placeholder="Ask the AI assistant to recommend a trade, analyze metrics or log a journal entry..."
+                  value={promptInput}
+                  onChange={(e) => setPromptInput(e.target.value)}
+                  disabled={sendingPrompt}
+                  className="flex-1 bg-slate-950/80 border border-slate-800 rounded-lg px-3 py-2 text-xs focus:outline-none focus:border-cyan-500 text-slate-200 placeholder-slate-600 disabled:opacity-50"
+                />
+                <button
+                  type="submit"
+                  disabled={sendingPrompt || !promptInput.trim()}
+                  className="bg-cyan-500 hover:bg-cyan-400 text-black px-3.5 rounded-lg flex items-center justify-center transition disabled:opacity-40 cursor-pointer"
+                >
+                  <Send size={14} />
+                </button>
+              </form>
+            </div>
+          </div>
+        </section>
+
         {/* Live Market Analysis Card */}
         <section className="bg-[#0B0F19]/70 backdrop-blur border border-slate-850 rounded-xl p-6">
           <div className="flex items-center justify-between mb-6 border-b border-slate-900 pb-3">
-            <h3 className="text-sm font-bold uppercase tracking-wider text-slate-300 flex items-center gap-1.5">
+            <h3 className="text-sm font-bold uppercase tracking-wider text-slate-355 flex items-center gap-1.5">
               <Sparkles size={16} className="text-cyan-400" />
               <span>Live Market snapshot (Delta Exchange)</span>
             </h3>
@@ -695,7 +958,7 @@ export default function Dashboard() {
         </section>
 
         {/* Trade Journal Listings */}
-        <section className="bg-[#0B0F19]/70 backdrop-blur border border-slate-850 rounded-xl p-6">
+        <section className="bg-[#0B0F19]/70 backdrop-blur border border-slate-855 rounded-xl p-6">
           <div className="flex items-center justify-between mb-6">
             <h3 className="text-sm font-bold uppercase tracking-wider text-slate-300">Option Trades Log</h3>
             <span className="text-xs text-slate-500">{trades.length} entries registered</span>
