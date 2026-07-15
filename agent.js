@@ -5,6 +5,7 @@ import readline from 'readline';
 import { argv, env, exit } from 'process';
 import * as api from './index.js';
 import fs from 'fs';
+import { createClient } from '@supabase/supabase-js';
 
 // 1. Verify API Key
 if (!env.OPENAI_API_KEY) {
@@ -17,9 +18,72 @@ if (!env.OPENAI_API_KEY) {
 const MODEL = env.OPENAI_MODEL || 'gpt-5-mini';
 const openai = new OpenAI({ apiKey: env.OPENAI_API_KEY });
 const PROFILE_PATH = 'user_profile.json';
+const JOURNAL_PATH = 'trade_journal.json';
 
-// Helper to read user profile
-function readUserProfile() {
+// Initialize Supabase Client
+const supabaseUrl = env.SUPABASE_URL;
+const supabaseKey = env.SUPABASE_KEY;
+const isSupabaseEnabled = !!(supabaseUrl && supabaseKey);
+const supabase = isSupabaseEnabled ? createClient(supabaseUrl, supabaseKey) : null;
+
+if (isSupabaseEnabled) {
+  console.log('\x1b[32m[System] Supabase database integration is enabled.\x1b[0m');
+} else {
+  console.log('\x1b[33m[System] Supabase credentials not found. Falling back to local JSON files.\x1b[0m');
+}
+
+// Helper to parse currency strings to numbers (e.g. "$10.00" -> 10.00)
+function parseCurrency(val) {
+  if (val === null || val === undefined) return 0;
+  if (typeof val === 'number') return val;
+  const cleaned = val.replace(/[^0-9.-]/g, '');
+  const num = parseFloat(cleaned);
+  return isNaN(num) ? 0 : num;
+}
+
+// Helper to compute P&L from result string
+function calculatePnL(result, risk, reward) {
+  if (!result || result.toLowerCase().includes('pending')) {
+    return null;
+  }
+  if (result.toLowerCase().includes('profit')) {
+    const val = parseCurrency(result);
+    return val !== 0 ? Math.abs(val) : parseCurrency(reward);
+  }
+  if (result.toLowerCase().includes('loss')) {
+    const val = parseCurrency(result);
+    return val !== 0 ? -Math.abs(val) : -parseCurrency(risk);
+  }
+  const val = parseCurrency(result);
+  return val;
+}
+
+// Helper to read user profile (async)
+async function readUserProfile() {
+  if (isSupabaseEnabled) {
+    try {
+      const { data, error } = await supabase
+        .from('user_profile')
+        .select('*')
+        .eq('key', 'default')
+        .maybeSingle();
+
+      if (error) throw error;
+      if (data) {
+        return {
+          capital: Number(data.capital),
+          riskTolerance: Number(data.risk_tolerance),
+          minRR: Number(data.min_rr),
+          preferredExpiry: data.preferred_expiry || undefined,
+          preferredStrategies: data.preferred_strategies || [],
+          notes: data.notes || ''
+        };
+      }
+    } catch (error) {
+      console.error(`\x1b[31m[Supabase Error] Failed to read user profile: ${error.message}\x1b[0m`);
+    }
+  }
+
   try {
     if (fs.existsSync(PROFILE_PATH)) {
       const data = fs.readFileSync(PROFILE_PATH, 'utf8');
@@ -31,21 +95,67 @@ function readUserProfile() {
   return {};
 }
 
-// Helper to write user profile
-function writeUserProfile(profile) {
+// Helper to write user profile (async)
+async function writeUserProfile(profile) {
+  if (isSupabaseEnabled) {
+    try {
+      const dbProfile = {
+        capital: profile.capital,
+        risk_tolerance: profile.riskTolerance,
+        min_rr: profile.minRR,
+        preferred_expiry: profile.preferredExpiry,
+        preferred_strategies: profile.preferredStrategies,
+        notes: profile.notes,
+        updated_at: new Date().toISOString()
+      };
+
+      const { error } = await supabase
+        .from('user_profile')
+        .upsert({ key: 'default', ...dbProfile }, { onConflict: 'key' });
+
+      if (error) throw error;
+      return { success: true, message: 'User profile updated in Supabase.' };
+    } catch (error) {
+      console.error(`\x1b[31m[Supabase Error] Failed to write user profile: ${error.message}\x1b[0m`);
+      return { success: false, error: error.message };
+    }
+  }
+
   try {
     fs.writeFileSync(PROFILE_PATH, JSON.stringify(profile, null, 2), 'utf8');
-    return { success: true, message: 'User profile updated successfully.' };
+    return { success: true, message: 'User profile updated locally.' };
   } catch (error) {
     console.error(`\x1b[31m[System Error] Failed to write user profile: ${error.message}\x1b[0m`);
     return { success: false, error: error.message };
   }
 }
 
-const JOURNAL_PATH = 'trade_journal.json';
+// Helper to read trade journal (async)
+async function readTradeJournal() {
+  if (isSupabaseEnabled) {
+    try {
+      const { data, error } = await supabase
+        .from('trade_journal')
+        .select('*')
+        .order('date', { ascending: false })
+        .order('id', { ascending: false });
 
-// Helper to read trade journal
-function readTradeJournal() {
+      if (error) throw error;
+      return data.map(item => ({
+        date: item.date,
+        marketState: item.market_state,
+        strategy: item.strategy,
+        reason: item.reason,
+        risk: `$${Number(item.risk).toFixed(2)}`,
+        reward: `$${Number(item.reward).toFixed(2)}`,
+        result: item.result,
+        lessons: item.lessons || ''
+      }));
+    } catch (error) {
+      console.error(`\x1b[31m[Supabase Error] Failed to read trade journal: ${error.message}\x1b[0m`);
+    }
+  }
+
   try {
     if (fs.existsSync(JOURNAL_PATH)) {
       const data = fs.readFileSync(JOURNAL_PATH, 'utf8');
@@ -57,13 +167,44 @@ function readTradeJournal() {
   return [];
 }
 
-// Helper to write trade journal
-function writeTradeJournal(journal) {
+// Helper to write trade journal (async, local-only fallback)
+async function writeTradeJournal(journal) {
   try {
     fs.writeFileSync(JOURNAL_PATH, JSON.stringify(journal, null, 2), 'utf8');
     return { success: true, message: 'Trade logged successfully.' };
   } catch (error) {
     console.error(`\x1b[31m[System Error] Failed to write trade journal: ${error.message}\x1b[0m`);
+    return { success: false, error: error.message };
+  }
+}
+
+// Helper to insert a trade directly to Supabase
+async function logTradeToSupabase(trade) {
+  try {
+    const riskVal = parseCurrency(trade.risk);
+    const rewardVal = parseCurrency(trade.reward);
+    const pnlVal = calculatePnL(trade.result, riskVal, rewardVal);
+
+    const dbTrade = {
+      date: trade.date,
+      market_state: trade.marketState,
+      strategy: trade.strategy,
+      reason: trade.reason,
+      risk: riskVal,
+      reward: rewardVal,
+      result: trade.result,
+      pnl: pnlVal,
+      lessons: trade.lessons
+    };
+
+    const { error } = await supabase
+      .from('trade_journal')
+      .insert([dbTrade]);
+
+    if (error) throw error;
+    return { success: true, message: 'Trade logged successfully in Supabase.' };
+  } catch (error) {
+    console.error(`\x1b[31m[Supabase Error] Failed to log trade: ${error.message}\x1b[0m`);
     return { success: false, error: error.message };
   }
 }
@@ -93,10 +234,9 @@ Rules for recommendation:
 /**
  * Builds the system prompt injecting the latest user memory profile.
  */
-function getSystemPrompt() {
-  const profile = readUserProfile();
+function getSystemPrompt(profile) {
   let profileSection = '\n\n=== USER PROFILE (MEMORY) ===\n';
-  if (Object.keys(profile).length === 0) {
+  if (!profile || Object.keys(profile).length === 0) {
     profileSection += 'No user preferences or capital constraints stored yet. Ask the user for their capital and risk preferences if relevant, or save them when they state them.';
   } else {
     if (profile.capital) profileSection += `- Capital: $${profile.capital.toLocaleString('en-US')}\n`;
@@ -364,19 +504,18 @@ const availableFunctions = {
   getStrikeDetails: api.getStrikeDetails,
   getOptionChain: api.getOptionChain,
   calculateStrategy: api.calculateStrategy,
-  getUserProfile: () => {
-    return readUserProfile();
+  getUserProfile: async () => {
+    return await readUserProfile();
   },
-  updateUserProfile: (args) => {
-    const current = readUserProfile();
+  updateUserProfile: async (args) => {
+    const current = await readUserProfile();
     const updated = { ...current, ...args };
-    return writeUserProfile(updated);
+    return await writeUserProfile(updated);
   },
-  getTradeJournal: () => {
-    return readTradeJournal();
+  getTradeJournal: async () => {
+    return await readTradeJournal();
   },
-  logTrade: (args) => {
-    const journal = readTradeJournal();
+  logTrade: async (args) => {
     const newTrade = {
       date: args.date || new Date().toISOString().slice(0, 10),
       marketState: args.marketState || 'Unknown',
@@ -387,8 +526,13 @@ const availableFunctions = {
       result: args.result || 'Pending',
       lessons: args.lessons || ''
     };
-    journal.push(newTrade);
-    return writeTradeJournal(journal);
+    if (isSupabaseEnabled) {
+      return await logTradeToSupabase(newTrade);
+    } else {
+      const journal = await readTradeJournal();
+      journal.push(newTrade);
+      return await writeTradeJournal(journal);
+    }
   },
   validateTrade: api.validateTrade
 };
@@ -463,7 +607,8 @@ async function start() {
   const userPrompt = args.join(' ').trim();
 
   // Load latest system prompt with user profile memory
-  const systemPromptContent = getSystemPrompt();
+  const profile = await readUserProfile();
+  const systemPromptContent = getSystemPrompt(profile);
   const conversationHistory = [
     { role: 'system', content: systemPromptContent }
   ];
