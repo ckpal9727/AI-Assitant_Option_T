@@ -448,6 +448,49 @@ const availableFunctions = {
     return await readTradeJournal();
   },
   logTrade: async (args) => {
+    let entryFactors = args.entryFactors;
+    if (!entryFactors && args.legs && args.legs.length > 0) {
+      try {
+        const btcPrice = await getCurrentBTCPrice();
+        const summary = await getMarketSummary({});
+        if (summary) {
+          entryFactors = {
+            btcPrice: btcPrice || null,
+            averageIV: summary.averageIV || null,
+            ivClassification: summary.ivClassification || null,
+            support: summary.support || null,
+            resistance: summary.resistance || null,
+            pcr: summary.pcr || null,
+            fundingRate: summary.funding?.rate !== undefined ? summary.funding.rate : null,
+            fundingSentiment: summary.funding?.sentiment || null,
+            signalsAligned: summary.confidenceInputs?.signalsAligned || 0,
+            signalsConflicting: summary.confidenceInputs?.signalsConflicting || 0
+          };
+          
+          try {
+            const firstLeg = args.legs[0];
+            const secondLeg = args.legs.find(l => l.action !== firstLeg.action);
+            if (firstLeg && secondLeg) {
+              const valResult = await validateTrade({
+                strategy: args.strategy,
+                expiry: firstLeg.symbol.split('-')[3] || '',
+                shortStrike: secondLeg.strike,
+                longStrike: firstLeg.strike
+              });
+              if (valResult) {
+                entryFactors.opportunityScore = valResult.opportunityScore;
+                entryFactors.validationScores = valResult.scores || valResult.validationScores;
+              }
+            }
+          } catch (valErr) {
+            console.error('Auto-validation of entry factors failed:', valErr.message);
+          }
+        }
+      } catch (err) {
+        console.error('Failed to auto-populate entry factors:', err.message);
+      }
+    }
+
     const newTrade = {
       date: args.date || new Date().toISOString().slice(0, 10),
       marketState: args.marketState || 'Unknown',
@@ -458,7 +501,7 @@ const availableFunctions = {
       result: args.result || 'Pending',
       lessons: args.lessons || '',
       legs: args.legs || [],
-      entryFactors: args.entryFactors || null
+      entryFactors: entryFactors || null
     };
     return await logTradeToSupabase(newTrade);
   },

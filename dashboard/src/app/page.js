@@ -392,7 +392,19 @@ export default function Dashboard() {
       pnl: (newTrade.result && (newTrade.result.includes('Profit') || newTrade.result.includes('Loss')))
         ? (newTrade.result.includes('Profit') ? rewardNum : -riskNum)
         : null,
-      legs: newTrade.legs || []
+      legs: newTrade.legs || [],
+      entry_factors: marketSummary ? {
+        btcPrice: marketSummary.btcPrice || null,
+        averageIV: marketSummary.averageIV || null,
+        ivClassification: marketSummary.ivClassification || null,
+        support: marketSummary.support || null,
+        resistance: marketSummary.resistance || null,
+        pcr: marketSummary.pcr || null,
+        fundingRate: marketSummary.funding?.rate !== undefined ? marketSummary.funding.rate : null,
+        fundingSentiment: marketSummary.funding?.sentiment || null,
+        signalsAligned: marketSummary.confidenceInputs?.signalsAligned || 0,
+        signalsConflicting: marketSummary.confidenceInputs?.signalsConflicting || 0
+      } : null
     };
 
     if (isDemo) {
@@ -1514,65 +1526,65 @@ export default function Dashboard() {
               {/* Section 2: Entry Factors */}
               <div>
                 <h4 className="text-xs font-bold uppercase tracking-wider text-cyan-400 mb-2.5">Entry Market Factors (Snapshot)</h4>
-                {selectedInspectTrade.entryFactors ? (
+                {selectedInspectTrade.entry_factors ? (
                   <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
                     <div className="bg-[#121824]/40 border border-slate-900 rounded-lg p-3">
                       <p className="text-[10px] text-slate-500 uppercase font-semibold">BTC Price</p>
-                      <p className="text-sm font-bold text-slate-200 font-mono mt-0.5">${selectedInspectTrade.entryFactors.btcPrice?.toLocaleString() || '-'}</p>
+                      <p className="text-sm font-bold text-slate-200 font-mono mt-0.5">${selectedInspectTrade.entry_factors.btcPrice?.toLocaleString() || '-'}</p>
                     </div>
                     <div className="bg-[#121824]/40 border border-slate-900 rounded-lg p-3">
                       <p className="text-[10px] text-slate-500 uppercase font-semibold">Average ATM IV</p>
                       <p className="text-sm font-bold text-slate-200 font-mono mt-0.5">
-                        {selectedInspectTrade.entryFactors.averageIV ? `${selectedInspectTrade.entryFactors.averageIV}%` : '-'} 
-                        <span className="text-[10px] text-slate-400 font-sans ml-1">({selectedInspectTrade.entryFactors.ivClassification || '-'})</span>
+                        {selectedInspectTrade.entry_factors.averageIV ? `${selectedInspectTrade.entry_factors.averageIV}%` : '-'} 
+                        <span className="text-[10px] text-slate-400 font-sans ml-1">({selectedInspectTrade.entry_factors.ivClassification || '-'})</span>
                       </p>
                     </div>
                     <div className="bg-[#121824]/40 border border-slate-900 rounded-lg p-3">
                       <p className="text-[10px] text-slate-500 uppercase font-semibold">Support / Resistance</p>
-                      <p className="text-sm font-bold text-slate-200 font-mono mt-0.5">${selectedInspectTrade.entryFactors.support?.toLocaleString()} / ${selectedInspectTrade.entryFactors.resistance?.toLocaleString()}</p>
+                      <p className="text-sm font-bold text-slate-200 font-mono mt-0.5">${selectedInspectTrade.entry_factors.support?.toLocaleString()} / ${selectedInspectTrade.entry_factors.resistance?.toLocaleString()}</p>
                     </div>
                     <div className="bg-[#121824]/40 border border-slate-900 rounded-lg p-3">
                       <p className="text-[10px] text-slate-500 uppercase font-semibold">Put/Call Ratio (PCR)</p>
-                      <p className="text-sm font-bold text-slate-200 font-mono mt-0.5">{selectedInspectTrade.entryFactors.pcr || '-'}</p>
+                      <p className="text-sm font-bold text-slate-200 font-mono mt-0.5">{selectedInspectTrade.entry_factors.pcr || '-'}</p>
                     </div>
                     <div className="bg-[#121824]/40 border border-slate-900 rounded-lg p-3">
                       <p className="text-[10px] text-slate-500 uppercase font-semibold">Funding Rate / Bias</p>
                       <p className="text-sm font-bold text-slate-200 font-mono mt-0.5">
-                        {selectedInspectTrade.entryFactors.fundingRate ? `${selectedInspectTrade.entryFactors.fundingRate.toFixed(4)}%` : '-'}
-                        <span className="text-[10px] text-slate-400 font-sans ml-1 font-sans">({selectedInspectTrade.entryFactors.fundingSentiment || '-'})</span>
+                        {selectedInspectTrade.entry_factors.fundingRate ? `${selectedInspectTrade.entry_factors.fundingRate.toFixed(4)}%` : '-'}
+                        <span className="text-[10px] text-slate-400 font-sans ml-1 font-sans">({selectedInspectTrade.entry_factors.fundingSentiment || '-'})</span>
                       </p>
                     </div>
                     <div className="bg-[#121824]/40 border border-slate-900 rounded-lg p-3">
                       <p className="text-[10px] text-slate-500 uppercase font-semibold">Aligned vs Conflicting</p>
-                      <p className="text-sm font-bold text-slate-200 font-mono mt-0.5">{selectedInspectTrade.entryFactors.signalsAligned} Aligned / {selectedInspectTrade.entryFactors.signalsConflicting} Conflicting</p>
+                      <p className="text-sm font-bold text-slate-200 font-mono mt-0.5">{selectedInspectTrade.entry_factors.signalsAligned} Aligned / {selectedInspectTrade.entry_factors.signalsConflicting} Conflicting</p>
                     </div>
-                    {selectedInspectTrade.entryFactors.opportunityScore && (
+                    {selectedInspectTrade.entry_factors.opportunityScore && (
                       <div className="bg-[#121824]/40 border border-slate-900 rounded-lg p-3 col-span-2 sm:col-span-3">
                         <p className="text-[10px] text-slate-500 uppercase font-semibold mb-1.5">Opportunity Validation Subscores</p>
                         <div className="grid grid-cols-3 sm:grid-cols-6 gap-2 text-center text-slate-300 font-mono text-xs">
                           <div className="bg-slate-950/60 p-1.5 rounded border border-slate-900">
                             <span className="text-[9px] text-slate-500 block font-sans">Risk/Reward</span>
-                            {selectedInspectTrade.entryFactors.validationScores?.riskReward || '-'}
+                            {selectedInspectTrade.entry_factors.validationScores?.riskReward || '-'}
                           </div>
                           <div className="bg-slate-950/60 p-1.5 rounded border border-slate-900">
                             <span className="text-[9px] text-slate-500 block font-sans">Liquidity</span>
-                            {selectedInspectTrade.entryFactors.validationScores?.liquidity || '-'}
+                            {selectedInspectTrade.entry_factors.validationScores?.liquidity || '-'}
                           </div>
                           <div className="bg-slate-950/60 p-1.5 rounded border border-slate-900">
                             <span className="text-[9px] text-slate-500 block font-sans">Spread</span>
-                            {selectedInspectTrade.entryFactors.validationScores?.spread || '-'}
+                            {selectedInspectTrade.entry_factors.validationScores?.spread || '-'}
                           </div>
                           <div className="bg-slate-950/60 p-1.5 rounded border border-slate-900">
                             <span className="text-[9px] text-slate-500 block font-sans">Open Int</span>
-                            {selectedInspectTrade.entryFactors.validationScores?.oi || '-'}
+                            {selectedInspectTrade.entry_factors.validationScores?.oi || '-'}
                           </div>
                           <div className="bg-slate-950/60 p-1.5 rounded border border-slate-900">
                             <span className="text-[9px] text-slate-500 block font-sans">Expiry</span>
-                            {selectedInspectTrade.entryFactors.validationScores?.expiry || '-'}
+                            {selectedInspectTrade.entry_factors.validationScores?.expiry || '-'}
                           </div>
                           <div className="bg-slate-950/60 p-1.5 rounded border border-slate-900">
                             <span className="text-[9px] text-slate-500 block font-sans">Alignment</span>
-                            {selectedInspectTrade.entryFactors.validationScores?.marketAlignment || '-'}
+                            {selectedInspectTrade.entry_factors.validationScores?.marketAlignment || '-'}
                           </div>
                         </div>
                       </div>
