@@ -116,7 +116,8 @@ async function readTradeJournal() {
         risk: `$${Number(item.risk).toFixed(2)}`,
         reward: `$${Number(item.reward).toFixed(2)}`,
         result: item.result,
-        lessons: item.lessons || ''
+        lessons: item.lessons || '',
+        legs: item.legs || []
       }));
     } catch (error) {
       console.error('[API Agent DB] Read trade journal failed:', error.message);
@@ -141,7 +142,8 @@ async function logTradeToSupabase(trade) {
         reward: rewardVal,
         result: trade.result,
         pnl: pnlVal,
-        lessons: trade.lessons
+        lessons: trade.lessons,
+        legs: trade.legs || []
       };
 
       const { error } = await supabase
@@ -322,7 +324,23 @@ const tools = [
           risk: { type: 'string' },
           reward: { type: 'string' },
           result: { type: 'string' },
-          lessons: { type: 'string' }
+          lessons: { type: 'string' },
+          legs: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                symbol: { type: 'string', description: 'Option contract symbol, e.g. C-BTC-65000-170726.' },
+                strike: { type: 'number', description: 'Strike price.' },
+                type: { type: 'string', enum: ['C', 'P'], description: 'Call (C) or Put (P).' },
+                action: { type: 'string', enum: ['buy', 'sell'], description: 'buy (long) or sell (short).' },
+                entry_price: { type: 'number', description: 'Option premium entry price per BTC.' },
+                quantity: { type: 'number', description: 'Contract size/quantity in BTC terms, e.g. 0.01 or 1.' }
+              },
+              required: ['symbol', 'strike', 'type', 'action', 'entry_price', 'quantity']
+            },
+            description: 'Structured array of option legs for real-time P&L tracking.'
+          }
         },
         required: ['strategy', 'reason', 'risk', 'reward']
       }
@@ -391,7 +409,8 @@ const availableFunctions = {
       risk: args.risk || '$0.00',
       reward: args.reward || '$0.00',
       result: args.result || 'Pending',
-      lessons: args.lessons || ''
+      lessons: args.lessons || '',
+      legs: args.legs || []
     };
     return await logTradeToSupabase(newTrade);
   },

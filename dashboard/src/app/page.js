@@ -76,7 +76,25 @@ const DEMO_TRADES = [
     reward: 30.00,
     result: 'Pending',
     pnl: null,
-    lessons: ''
+    lessons: '',
+    legs: [
+      {
+        symbol: 'P-BTC-62000-170726',
+        strike: 62000,
+        type: 'P',
+        action: 'sell',
+        entry_price: 15.00,
+        quantity: 2
+      },
+      {
+        symbol: 'P-BTC-61000-170726',
+        strike: 61000,
+        type: 'P',
+        action: 'buy',
+        entry_price: 10.00,
+        quantity: 2
+      }
+    ]
   }
 ];
 
@@ -89,10 +107,67 @@ const DEMO_PROFILE = {
   notes: 'Personal portfolio, targeting options spreads with probability of profit > 70%.'
 };
 
+function LivePnlValue({ value, isHeaderCard = false }) {
+  const prevValueRef = useRef(value);
+  const [flashClass, setFlashClass] = useState('');
+
+  useEffect(() => {
+    const prevValue = prevValueRef.current;
+    if (value !== prevValue && prevValue !== undefined && value !== undefined) {
+      if (value > prevValue) {
+        setFlashClass('bg-emerald-500/25 text-emerald-300 font-bold scale-105 px-1 py-0.5 rounded transition-all duration-300');
+      } else if (value < prevValue) {
+        setFlashClass('bg-rose-500/25 text-rose-300 font-bold scale-105 px-1 py-0.5 rounded transition-all duration-300');
+      }
+      prevValueRef.current = value;
+
+      const timer = setTimeout(() => {
+        setFlashClass('');
+      }, 800);
+
+      return () => clearTimeout(timer);
+    } else {
+      prevValueRef.current = value;
+    }
+  }, [value]);
+
+  const displayVal = value !== null && value !== undefined ? value : 0;
+  const formattedVal = (displayVal >= 0 ? '+' : '') + '$' + displayVal.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const colorClass = displayVal >= 0 ? 'text-emerald-400 font-mono font-semibold' : 'text-rose-500 font-mono font-semibold';
+
+  if (isHeaderCard) {
+    return (
+      <span className={`inline-block transition-all duration-500 transform ${flashClass || colorClass}`}>
+        {formattedVal}
+      </span>
+    );
+  }
+
+  return (
+    <span className={`text-[11px] font-bold transition-all duration-500 transform ${flashClass || colorClass}`}>
+      {formattedVal}
+    </span>
+  );
+}
+
+function getTradeUnrealizedPnL(trade, liveTickers) {
+  if (!trade.legs || trade.legs.length === 0) return 0;
+  let tradePnL = 0;
+  for (const leg of trade.legs) {
+    const ticker = liveTickers[leg.symbol];
+    if (ticker && ticker.markPrice !== null && ticker.markPrice !== undefined) {
+      const multiplier = leg.action === 'buy' ? 1 : -1;
+      tradePnL += multiplier * (ticker.markPrice - leg.entry_price) * (leg.quantity || 1);
+    }
+  }
+  return tradePnL;
+}
+
 export default function Dashboard() {
   const [trades, setTrades] = useState([]);
   const [profile, setProfile] = useState(DEMO_PROFILE);
   const [marketSummary, setMarketSummary] = useState(null);
+  const [liveTickers, setLiveTickers] = useState({});
   
   // Loading states
   const [loadingTrades, setLoadingTrades] = useState(true);
@@ -125,7 +200,9 @@ export default function Dashboard() {
     risk: '',
     reward: '',
     result: 'Pending',
-    lessons: ''
+    lessons: '',
+    legs: [],
+    legsText: ''
   });
   
   const [profileForm, setProfileForm] = useState({
@@ -161,6 +238,27 @@ export default function Dashboard() {
       chatBottomRef.current.scrollIntoView({ behavior: 'smooth' });
     }
   }, [chatMessages, sendingPrompt]);
+
+  // Poll live tickers for real-time P&L tracking
+  useEffect(() => {
+    let intervalId;
+    async function fetchLiveTickers() {
+      try {
+        const res = await fetch('/api/tickers');
+        const data = await res.json();
+        if (data.success && data.tickers) {
+          setLiveTickers(data.tickers);
+        }
+      } catch (err) {
+        console.error('Failed to fetch live tickers:', err);
+      }
+    }
+
+    fetchLiveTickers();
+    intervalId = setInterval(fetchLiveTickers, 2000); // Poll every 2 seconds
+
+    return () => clearInterval(intervalId);
+  }, []);
 
   // DB Fetching Functions
   async function fetchTradesFromDB() {
@@ -289,7 +387,10 @@ export default function Dashboard() {
       reward: rewardNum,
       result: newTrade.result,
       lessons: newTrade.lessons,
-      pnl: newTrade.result === 'Pending' ? null : (newTrade.result.includes('Profit') ? rewardNum : -riskNum)
+      pnl: (newTrade.result && (newTrade.result.includes('Profit') || newTrade.result.includes('Loss')))
+        ? (newTrade.result.includes('Profit') ? rewardNum : -riskNum)
+        : null,
+      legs: newTrade.legs || []
     };
 
     if (isDemo) {
@@ -316,7 +417,9 @@ export default function Dashboard() {
       risk: '',
       reward: '',
       result: 'Pending',
-      lessons: ''
+      lessons: '',
+      legs: [],
+      legsText: ''
     });
   }
 
@@ -504,14 +607,28 @@ export default function Dashboard() {
   }
 
   // P&L Calculations
-  const resolvedTrades = trades.filter(t => t.result !== 'Pending');
+  const resolvedTrades = trades.filter(t => t.result && (t.result.toLowerCase().includes('profit') || t.result.toLowerCase().includes('loss')));
   const totalPnL = resolvedTrades.reduce((acc, t) => acc + (t.pnl || 0), 0);
   const winCount = resolvedTrades.filter(t => (t.pnl || 0) > 0).length;
   const winRate = resolvedTrades.length > 0 ? (winCount / resolvedTrades.length) * 100 : 0;
-  const pendingCount = trades.filter(t => t.result === 'Pending').length;
+
+  const activeTrades = trades.filter(t => !t.result || t.result === 'Pending' || (!t.result.toLowerCase().includes('profit') && !t.result.toLowerCase().includes('loss')));
+  const pendingCount = activeTrades.length;
+  const netUnrealizedPnL = activeTrades.reduce((acc, t) => {
+    if (!t.legs || t.legs.length === 0) return acc;
+    let tradePnL = 0;
+    for (const leg of t.legs) {
+      const ticker = liveTickers[leg.symbol];
+      if (ticker && ticker.markPrice !== null && ticker.markPrice !== undefined) {
+        const multiplier = leg.action === 'buy' ? 1 : -1;
+        tradePnL += multiplier * (ticker.markPrice - leg.entry_price) * (leg.quantity || 1);
+      }
+    }
+    return acc + tradePnL;
+  }, 0);
 
   const chronologicalTrades = [...trades]
-    .filter(t => t.result !== 'Pending')
+    .filter(t => t.result && (t.result.toLowerCase().includes('profit') || t.result.toLowerCase().includes('loss')))
     .sort((a, b) => new Date(a.date) - new Date(b.date));
 
   let currentSum = 0;
@@ -604,13 +721,13 @@ export default function Dashboard() {
       {/* Dashboard Body */}
       <div className="max-w-7xl mx-auto p-6 space-y-6">
         {/* Core Stats Overview */}
-        <section className="grid grid-cols-1 md:grid-cols-4 gap-4">
+        <section className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
           {/* Card 1: Total Profit */}
           <div className="bg-[#121824]/60 backdrop-blur border border-slate-800/80 rounded-xl p-5 relative overflow-hidden group">
             <div className="absolute top-0 right-0 p-4 opacity-10 text-slate-400 group-hover:scale-110 transition duration-300">
               <DollarSign size={48} />
             </div>
-            <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1">Net P&L (Live)</p>
+            <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1">Net P&L (Closed)</p>
             <h3 className={`text-2xl font-bold tracking-tight drop-shadow-md ${totalPnL >= 0 ? 'text-emerald-400' : 'text-rose-500'}`}>
               {totalPnL >= 0 ? '+' : ''}${totalPnL.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
             </h3>
@@ -663,6 +780,25 @@ export default function Dashboard() {
             </h3>
             <p className="text-[10px] text-slate-500 mt-2">
               Based on <span className="text-slate-300 font-semibold">${profile.capital.toLocaleString()}</span> cap @ <span className="text-slate-300 font-semibold">{(profile.riskTolerance * 100).toFixed(1)}%</span> risk limit
+            </p>
+          </div>
+
+          {/* Card 5: Live Unrealized P&L */}
+          <div className="bg-[#121824]/60 backdrop-blur border border-slate-800/80 rounded-xl p-5 relative overflow-hidden group">
+            <div className="absolute top-0 right-0 p-4 opacity-10 text-slate-400 group-hover:scale-110 transition duration-300">
+              <TrendingUp size={48} className={netUnrealizedPnL >= 0 ? 'text-emerald-500' : 'text-rose-500'} />
+            </div>
+            <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1">Unrealized P&L (Live)</p>
+            <h3 className="text-2xl font-bold tracking-tight">
+              <LivePnlValue value={netUnrealizedPnL} isHeaderCard={true} />
+            </h3>
+            <p className="text-[10px] text-slate-500 mt-2 flex items-center gap-1">
+              {netUnrealizedPnL >= 0 ? (
+                <span className="text-emerald-400 flex items-center font-semibold"><TrendingUp size={10} /> Positive Return</span>
+              ) : (
+                <span className="text-rose-500 flex items-center font-semibold"><TrendingDown size={10} /> Net Loss</span>
+              )}
+              across {pendingCount} open positions
             </p>
           </div>
         </section>
@@ -996,7 +1132,7 @@ export default function Dashboard() {
                 </thead>
                 <tbody className="divide-y divide-slate-900 text-slate-350">
                   {trades.map((trade) => {
-                    const isPending = trade.result === 'Pending' || !trade.result;
+                    const isPending = !trade.result || trade.result === 'Pending' || (!trade.result.toLowerCase().includes('profit') && !trade.result.toLowerCase().includes('loss'));
                     const isWin = trade.pnl > 0;
 
                     return (
@@ -1016,9 +1152,17 @@ export default function Dashboard() {
                         </td>
                         <td className="py-3.5 px-4">
                           {isPending ? (
-                            <span className="text-[10px] font-semibold bg-amber-500/10 text-amber-400 border border-amber-500/20 px-2.5 py-0.5 rounded-full">
-                              Active / Pending
-                            </span>
+                            <div className="flex flex-col gap-1 items-start">
+                              <span className="text-[10px] font-semibold bg-amber-500/10 text-amber-400 border border-amber-500/20 px-2.5 py-0.5 rounded-full">
+                                Active / Pending
+                              </span>
+                              {trade.legs && trade.legs.length > 0 && (
+                                <div className="flex items-center gap-1 mt-0.5 animate-pulse">
+                                  <span className="text-[9px] text-slate-500">Live P&L:</span>
+                                  <LivePnlValue value={getTradeUnrealizedPnL(trade, liveTickers)} />
+                                </div>
+                              )}
+                            </div>
                           ) : (
                             <span className={`text-[10px] font-bold px-2.5 py-0.5 rounded-full border ${
                               isWin 
@@ -1170,6 +1314,23 @@ export default function Dashboard() {
                   value={newTrade.lessons}
                   onChange={(e) => setNewTrade({ ...newTrade, lessons: e.target.value })}
                   className="w-full text-sm bg-slate-900 border border-slate-800 rounded p-2 focus:outline-none focus:border-cyan-500 text-slate-200"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1">Option Legs (JSON Array - Optional)</label>
+                <textarea
+                  rows="2"
+                  placeholder='e.g. [{"symbol":"P-BTC-62000-170726", "strike":62000, "type":"P", "action":"sell", "entry_price":15.00, "quantity":2}]'
+                  value={newTrade.legsText || ''}
+                  onChange={(e) => {
+                    let parsed = [];
+                    try {
+                      parsed = JSON.parse(e.target.value);
+                    } catch (err) {}
+                    setNewTrade({ ...newTrade, legsText: e.target.value, legs: parsed });
+                  }}
+                  className="w-full text-xs font-mono bg-slate-900 border border-slate-800 rounded p-2 focus:outline-none focus:border-cyan-500 text-slate-200"
                 />
               </div>
 
