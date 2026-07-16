@@ -117,7 +117,8 @@ async function readTradeJournal() {
         reward: `$${Number(item.reward).toFixed(2)}`,
         result: item.result,
         lessons: item.lessons || '',
-        legs: item.legs || []
+        legs: item.legs || [],
+        entryFactors: item.entry_factors || null
       }));
     } catch (error) {
       console.error('[API Agent DB] Read trade journal failed:', error.message);
@@ -143,7 +144,8 @@ async function logTradeToSupabase(trade) {
         result: trade.result,
         pnl: pnlVal,
         lessons: trade.lessons,
-        legs: trade.legs || []
+        legs: trade.legs || [],
+        entry_factors: trade.entryFactors || null
       };
 
       const { error } = await supabase
@@ -172,7 +174,7 @@ You have access to the following market data and trade journaling tools:
 6. getUserProfile(): Returns the stored user profile preferences (capital, risk tolerance, preferred strategies, etc.).
 7. updateUserProfile(profile): Updates the stored user profile preferences.
 8. getTradeJournal(): Returns logged trade entries from the trade journal.
-9. logTrade(trade): Logs a trade with date, marketState, strategy, reason, risk, reward, result, and lessons.
+9. logTrade(trade): Logs a trade with date, marketState, strategy, reason, risk, reward, result, lessons, legs, and entryFactors.
 
 Rules for recommendation:
 - NEVER guess or make up maximum risk, maximum reward, net credit/debit, or break-even points. Always call 'calculateStrategy' to fetch the exact calculations before recommending any options spreads or strategies.
@@ -181,7 +183,9 @@ Rules for recommendation:
 - Why Not? Section: For every recommendation, you must include a detailed "Why Not?" section explaining why you rejected the other options in the 'candidateStrategies' list (and compare it to common alternatives like an Iron Condor or other spreads).
 - Confidence Score: Evaluate and explain your trade confidence based on the 'confidenceInputs' (the count of signalsAligned and signalsConflicting) returned by getMarketSummary(). Justify the final confidence (High, Medium, or Low) using these signals. Do not invent arbitrary percentages.
 - Payout P&L Limits: Calculate strategy lot sizes relative to the users Capital and Risk Tolerance stored in their profile. If Capital is $500 and Risk Tolerance is 2%, the max risk for the recommended trade must not exceed $10 (Capital * Risk). Explain this lot size math in your recommendation.
-- Output Format: Present your response in a clear, formatted layout with sections: Market Bias, Reason, Recommended Strategy, Opportunity Score, Suggested Strikes, Maximum Risk, Maximum Reward, Lot Size Sizing, Confidence (explaining Aligned vs Conflicting signals), Why not [alternative strategy candidates]?.`;
+- HISTORY-BASED LEARNING: Before suggesting any options trade, you MUST retrieve past trades via 'getTradeJournal()'. Analyze the 'entryFactors' of closed trades (those with "Profit" or "Loss" results). Identify which factor combinations (e.g. low/high IV, specific Greeks, alignment metrics, PCR levels) historically resulted in profitable outcomes versus losses. Mention this performance insight inside your trade recommendation (e.g., "Historically, setups under similar IV and PCR conditions resulted in [X]% win rate...").
+- LOGGING ENTRY FACTORS: When you log a trade via 'logTrade()', you MUST populate the 'entryFactors' parameter using the exact market summary metrics (prices, S/R, PCR, IV, signals, Greeks, and validateTrade subscores) present at entry. This allows the system to build the historical training dataset for you to learn from in subsequent turns.
+- Output Format: Present your response in a clear, formatted layout with sections: Market Bias, Reason, Recommended Strategy, Opportunity Score, Suggested Strikes, Maximum Risk, Maximum Reward, Lot Size Sizing, Confidence (explaining Aligned vs Conflicting signals), Why not [alternative strategy candidates]?, Historical Learnings (analyzing closed trades factors).`;
 
 function getSystemPrompt(profile) {
   let profileSection = '\n\n=== USER PROFILE (MEMORY) ===\n';
@@ -340,6 +344,49 @@ const tools = [
               required: ['symbol', 'strike', 'type', 'action', 'entry_price', 'quantity']
             },
             description: 'Structured array of option legs for real-time P&L tracking.'
+          },
+          entryFactors: {
+            type: 'object',
+            properties: {
+              btcPrice: { type: 'number' },
+              averageIV: { type: 'number' },
+              ivClassification: { type: 'string' },
+              support: { type: 'number' },
+              resistance: { type: 'number' },
+              pcr: { type: 'number' },
+              fundingRate: { type: 'number' },
+              fundingSentiment: { type: 'string' },
+              signalsAligned: { type: 'number' },
+              signalsConflicting: { type: 'number' },
+              opportunityScore: { type: 'number' },
+              validationScores: {
+                type: 'object',
+                properties: {
+                  riskReward: { type: 'number' },
+                  liquidity: { type: 'number' },
+                  spread: { type: 'number' },
+                  oi: { type: 'number' },
+                  expiry: { type: 'number' },
+                  marketAlignment: { type: 'number' }
+                }
+              },
+              greeks: {
+                type: 'object',
+                properties: {
+                  callDelta: { type: 'number', nullable: true },
+                  putDelta: { type: 'number', nullable: true },
+                  callGamma: { type: 'number', nullable: true },
+                  putGamma: { type: 'number', nullable: true },
+                  callTheta: { type: 'number', nullable: true },
+                  putTheta: { type: 'number', nullable: true },
+                  callVega: { type: 'number', nullable: true },
+                  putVega: { type: 'number', nullable: true },
+                  callRho: { type: 'number', nullable: true },
+                  putRho: { type: 'number', nullable: true }
+                }
+              }
+            },
+            description: 'Pre-trade market analysis metrics recorded at trade entry for AI performance learning.'
           }
         },
         required: ['strategy', 'reason', 'risk', 'reward']
@@ -410,7 +457,8 @@ const availableFunctions = {
       reward: args.reward || '$0.00',
       result: args.result || 'Pending',
       lessons: args.lessons || '',
-      legs: args.legs || []
+      legs: args.legs || [],
+      entryFactors: args.entryFactors || null
     };
     return await logTradeToSupabase(newTrade);
   },
