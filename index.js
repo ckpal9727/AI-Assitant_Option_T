@@ -707,12 +707,30 @@ export async function getMarketSummary({ expiry = null } = {}) {
     marketState
   );
 
+  // 9.5. Chart Technical Analysis (4h)
+  let chartSupport = null;
+  let chartResistance = null;
+  let chartTrend = 'Sideways';
+  try {
+    const chartTech = await getChartTechnicalAnalysis({ symbol: 'BTCUSD', resolution: '4h', limit: 150 });
+    if (chartTech.success) {
+      chartSupport = chartTech.chartSupport;
+      chartResistance = chartTech.chartResistance;
+      chartTrend = chartTech.chartTrend;
+    }
+  } catch (chartErr) {
+    console.error('Error fetching chart technical analysis:', chartErr.message);
+  }
+
   const result = {
     btcPrice: spotPrice,
     atmStrike,
     distanceFromAtm: parseFloat(distanceFromATM.toFixed(1)),
     support: supportStrike,
     resistance: resistanceStrike,
+    chartSupport,
+    chartResistance,
+    chartTrend,
     maxPutOI: { strike: maxPutOIStrike, oi: maxPutOIVal },
     maxCallOI: { strike: maxCallOIStrike, oi: maxCallOIVal },
     pcr: parseFloat(pcr.toFixed(2)),
@@ -731,6 +749,22 @@ export async function getMarketSummary({ expiry = null } = {}) {
     },
     maxPain: maxPainStrike,
     greeks: greeksObj,
+    atmGreeks: {
+      call: {
+        delta: greeksObj.callDelta,
+        gamma: greeksObj.callGamma,
+        theta: greeksObj.callTheta,
+        vega: greeksObj.callVega,
+        rho: greeksObj.callRho
+      },
+      put: {
+        delta: greeksObj.putDelta,
+        gamma: greeksObj.putGamma,
+        theta: greeksObj.putTheta,
+        vega: greeksObj.putVega,
+        rho: greeksObj.putRho
+      }
+    },
     
     // Internal metadata for CLI printing
     _internal: {
@@ -1143,6 +1177,187 @@ export async function validateTrade({ strategy, expiry = null, shortStrike, long
     },
     warnings
   };
+}
+
+/**
+ * Helper to calculate Exponential Moving Average (EMA).
+ */
+function calculateEMA(prices, period) {
+  const ema = [];
+  if (prices.length === 0) return ema;
+  const k = 2 / (period + 1);
+  let sum = 0;
+  const initialPeriod = Math.min(period, prices.length);
+  for (let i = 0; i < initialPeriod; i++) {
+    sum += prices[i];
+  }
+  let currentEma = sum / initialPeriod;
+  for (let i = 0; i < prices.length; i++) {
+    if (i < period - 1) {
+      ema.push(currentEma);
+    } else if (i === period - 1) {
+      ema.push(currentEma);
+    } else {
+      currentEma = (prices[i] - currentEma) * k + currentEma;
+      ema.push(currentEma);
+    }
+  }
+  return ema;
+}
+
+/**
+ * Helper to cluster pivot points into price zones.
+ */
+function clusterPivots(pivots, currentPrice, tolerance = 0.015) {
+  const clusters = [];
+  for (const p of pivots) {
+    let found = false;
+    for (const c of clusters) {
+      if (Math.abs(c.avgPrice - p.price) / currentPrice <= tolerance) {
+        c.prices.push(p.price);
+        c.avgPrice = c.prices.reduce((sum, val) => sum + val, 0) / c.prices.length;
+        c.count++;
+        c.pivots.push(p);
+        found = true;
+        break;
+      }
+    }
+    if (!found) {
+      clusters.push({
+        avgPrice: p.price,
+        prices: [p.price],
+        count: 1,
+        pivots: [p]
+      });
+    }
+  }
+  return clusters;
+}
+
+/**
+ * TOOL: Fetch and analyze historical candle data to detect 4h-based trend and S/R levels.
+ */
+export async function getChartTechnicalAnalysis({ symbol = 'BTCUSD', resolution = '4h', limit = 150 } = {}) {
+  try {
+    const now = Math.floor(Date.now() / 1000);
+    const resolutionMap = {
+      '1m': 60, '3m': 180, '5m': 300, '15m': 900, '30m': 1800,
+      '1h': 3600, '2h': 7200, '4h': 14400, '6h': 21600, '1d': 86400, '1w': 604800
+    };
+    const durationPerCandle = resolutionMap[resolution] || 14400; // default 4h
+    const start = now - (limit + 50) * durationPerCandle;
+    const end = now;
+
+    const url = `${BASE_URL}/v2/history/candles?symbol=${symbol}&resolution=${resolution}&start=${start}&end=${end}`;
+    const res = await fetch(url);
+    if (!res.ok) {
+      throw new Error(`Failed to fetch history candles: ${res.statusText}`);
+    }
+    const data = await res.json();
+    if (!data.success || !data.result) {
+      throw new Error(data.error?.message || 'Failed to fetch historical candles');
+    }
+
+    const candles = [...data.result].reverse();
+    if (candles.length === 0) {
+      throw new Error('No historical candles returned');
+    }
+
+    const currentPrice = candles[candles.length - 1].close;
+    const closes = candles.map(c => c.close);
+    const ema20 = calculateEMA(closes, 20);
+    const ema50 = calculateEMA(closes, 50);
+
+    const latestEma20 = ema20[ema20.length - 1];
+    const latestEma50 = ema50[ema50.length - 1];
+
+    const prevEma50 = ema50[ema50.length - 6];
+    const ema50Slope = prevEma50 ? (latestEma50 - prevEma50) / prevEma50 : 0;
+
+    let chartTrend = 'Sideways';
+    const slopeThreshold = 0.0015; // 0.15% change over 5 candles (20 hours for 4h)
+    
+    if (latestEma20 > latestEma50 && currentPrice > latestEma50 && ema50Slope > slopeThreshold) {
+      chartTrend = 'Uptrend';
+    } else if (latestEma20 < latestEma50 && currentPrice < latestEma50 && ema50Slope < -slopeThreshold) {
+      chartTrend = 'Downtrend';
+    }
+
+    const N = 5;
+    const supportPivots = [];
+    const resistancePivots = [];
+
+    const searchStartIndex = Math.max(N, candles.length - 120);
+    for (let i = searchStartIndex; i < candles.length - N; i++) {
+      let isHigh = true;
+      let isLow = true;
+      for (let j = 1; j <= N; j++) {
+        if (candles[i].high <= candles[i - j].high || candles[i].high <= candles[i + j].high) {
+          isHigh = false;
+        }
+        if (candles[i].low >= candles[i - j].low || candles[i].low >= candles[i + j].low) {
+          isLow = false;
+        }
+      }
+      if (isHigh) {
+        resistancePivots.push({ price: candles[i].high, time: candles[i].time });
+      }
+      if (isLow) {
+        supportPivots.push({ price: candles[i].low, time: candles[i].time });
+      }
+    }
+
+    const supportClusters = clusterPivots(supportPivots, currentPrice, 0.015);
+    const resistanceClusters = clusterPivots(resistancePivots, currentPrice, 0.015);
+
+    const supportsBelow = supportClusters.filter(c => c.avgPrice < currentPrice);
+    const resistancesAbove = resistanceClusters.filter(c => c.avgPrice > currentPrice);
+
+    supportsBelow.sort((a, b) => b.avgPrice - a.avgPrice);
+    resistancesAbove.sort((a, b) => a.avgPrice - b.avgPrice);
+
+    let chartSupport = supportsBelow[0] ? Math.round(supportsBelow[0].avgPrice) : null;
+    let chartResistance = resistancesAbove[0] ? Math.round(resistancesAbove[0].avgPrice) : null;
+
+    if (!chartSupport) {
+      const lows = candles.slice(candles.length - 50).map(c => c.low);
+      chartSupport = Math.round(Math.min(...lows));
+    }
+    if (!chartResistance) {
+      const highs = candles.slice(candles.length - 50).map(c => c.high);
+      chartResistance = Math.round(Math.max(...highs));
+    }
+
+    const formattedSupports = supportsBelow.slice(0, 3).map(c => ({
+      price: Math.round(c.avgPrice),
+      strength: c.count
+    }));
+    const formattedResistances = resistancesAbove.slice(0, 3).map(c => ({
+      price: Math.round(c.avgPrice),
+      strength: c.count
+    }));
+
+    return {
+      success: true,
+      symbol,
+      resolution,
+      currentPrice,
+      chartTrend,
+      chartSupport,
+      chartResistance,
+      supports: formattedSupports,
+      resistances: formattedResistances,
+      ema20: parseFloat(latestEma20.toFixed(2)),
+      ema50: parseFloat(latestEma50.toFixed(2)),
+      message: `Technical analysis complete. BTC trend is ${chartTrend} on the ${resolution} chart. Support: ${chartSupport.toLocaleString()}, Resistance: ${chartResistance.toLocaleString()}.`
+    };
+  } catch (error) {
+    console.error('Error in getChartTechnicalAnalysis:', error.message);
+    return {
+      success: false,
+      error: error.message
+    };
+  }
 }
 
 /**
