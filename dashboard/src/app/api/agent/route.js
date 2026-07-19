@@ -1,13 +1,16 @@
 import { NextResponse } from 'next/server';
 import { OpenAI } from 'openai';
 import { createClient } from '@supabase/supabase-js';
+import fs from 'fs';
+import path from 'path';
 import {
   getCurrentBTCPrice,
   getMarketSummary,
   getStrikeDetails,
   getOptionChain,
   calculateStrategy,
-  validateTrade
+  validateTrade,
+  getChartTechnicalAnalysis
 } from '../../../../../index.js';
 
 const apiKey = process.env.OPENAI_API_KEY || '';
@@ -98,6 +101,8 @@ async function writeUserProfile(profile) {
   return { success: false, error: 'Database connection not available.' };
 }
 
+const JOURNAL_PATH = path.resolve(process.cwd(), '../trade_journal.json');
+
 async function readTradeJournal() {
   if (supabase) {
     try {
@@ -109,8 +114,10 @@ async function readTradeJournal() {
 
       if (error) throw error;
       return data.map(item => ({
+        id: item.id,
         date: item.date,
         marketState: item.market_state,
+        market_state: item.market_state,
         strategy: item.strategy,
         reason: item.reason,
         risk: `$${Number(item.risk).toFixed(2)}`,
@@ -118,13 +125,34 @@ async function readTradeJournal() {
         result: item.result,
         lessons: item.lessons || '',
         legs: item.legs || [],
-        entryFactors: item.entry_factors || null
+        entryFactors: item.entry_factors || null,
+        entry_factors: item.entry_factors || null
       }));
     } catch (error) {
       console.error('[API Agent DB] Read trade journal failed:', error.message);
     }
   }
+
+  // Local file fallback
+  try {
+    if (fs.existsSync(JOURNAL_PATH)) {
+      const data = fs.readFileSync(JOURNAL_PATH, 'utf8');
+      return JSON.parse(data);
+    }
+  } catch (err) {
+    console.error('Error reading local trade journal:', err);
+  }
   return [];
+}
+
+function writeTradeJournal(journal) {
+  try {
+    fs.writeFileSync(JOURNAL_PATH, JSON.stringify(journal, null, 2), 'utf8');
+    return { success: true, message: 'Trade logged successfully.' };
+  } catch (err) {
+    console.error('Error writing local trade journal:', err);
+    return { success: false, error: err.message };
+  }
 }
 
 async function logTradeToSupabase(trade) {
@@ -175,11 +203,13 @@ You have access to the following market data and trade journaling tools:
 7. updateUserProfile(profile): Updates the stored user profile preferences.
 8. getTradeJournal(): Returns logged trade entries from the trade journal.
 9. logTrade(trade): Logs a trade with date, marketState, strategy, reason, risk, reward, result, lessons, legs, and entryFactors.
+10. getChartTechnicalAnalysis(params): Fetches and analyzes historical candle data to detect trend (Uptrend, Downtrend, Sideways) and structural S/R pivots on custom resolutions (default 4h).
 
 Rules for recommendation:
 - NEVER guess or make up maximum risk, maximum reward, net credit/debit, or break-even points. Always call 'calculateStrategy' to fetch the exact calculations before recommending any options spreads or strategies.
 - Trade Validation: You MUST invoke 'validateTrade' on your final proposed strategy strikes to evaluate scores and warnings. Report the overall Opportunity Score and individual rating checklist returned by the tool.
 - Strategy Selection: Do NOT invent strategies outside the 'candidateStrategies' list provided in the getMarketSummary() output. Recommend the single best strategy from those candidates.
+- Chart S/R & Trend Alignment: Prioritize using structural 4H chart support and resistance levels (retrieved from getChartTechnicalAnalysis) to select your option strikes (e.g. place short put strike below 4H support, short call strike above 4H resistance). Explain how these chart-based levels align with or differ from option chain OI walls, and how the 4H trend bias confirms your strategy.
 - Why Not? Section: For every recommendation, you must include a detailed "Why Not?" section explaining why you rejected the other options in the 'candidateStrategies' list (and compare it to common alternatives like an Iron Condor or other spreads).
 - Confidence Score: Evaluate and explain your trade confidence based on the 'confidenceInputs' (the count of signalsAligned and signalsConflicting) returned by getMarketSummary(). Justify the final confidence (High, Medium, or Low) using these signals. Do not invent arbitrary percentages.
 - Payout P&L Limits: Calculate strategy lot sizes relative to the users Capital and Risk Tolerance stored in their profile. If Capital is $500 and Risk Tolerance is 2%, the max risk for the recommended trade must not exceed $10 (Capital * Risk). Explain this lot size math in your recommendation.
@@ -411,6 +441,30 @@ const tools = [
         required: ['strategy', 'shortStrike', 'longStrike']
       }
     }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'getChartTechnicalAnalysis',
+      description: 'Fetch and analyze historical candles to detect technical trend bias and structural support/resistance zones based on price action pivots.',
+      parameters: {
+        type: 'object',
+        properties: {
+          symbol: {
+            type: 'string',
+            description: 'The trading symbol (e.g. "BTCUSD"). Defaults to "BTCUSD".'
+          },
+          resolution: {
+            type: 'string',
+            description: 'Candle timeframe resolution: "1m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "1d", "1w". Defaults to "4h".'
+          },
+          limit: {
+            type: 'number',
+            description: 'Number of historical candles to analyze. Defaults to 150.'
+          }
+        }
+      }
+    }
   }
 ];
 
@@ -492,8 +546,10 @@ const availableFunctions = {
     }
 
     const newTrade = {
+      id: args.id || Math.floor(Math.random() * 1000000000),
       date: args.date || new Date().toISOString().slice(0, 10),
       marketState: args.marketState || 'Unknown',
+      market_state: args.marketState || 'Unknown',
       strategy: args.strategy || 'Unknown',
       reason: args.reason || '',
       risk: args.risk || '$0.00',
@@ -501,9 +557,16 @@ const availableFunctions = {
       result: args.result || 'Pending',
       lessons: args.lessons || '',
       legs: args.legs || [],
-      entryFactors: entryFactors || null
+      entryFactors: entryFactors || null,
+      entry_factors: entryFactors || null
     };
-    return await logTradeToSupabase(newTrade);
+    if (supabase) {
+      return await logTradeToSupabase(newTrade);
+    } else {
+      const journal = await readTradeJournal();
+      journal.push(newTrade);
+      return writeTradeJournal(journal);
+    }
   },
   validateTrade: async (args) => {
     return await validateTrade({
@@ -513,6 +576,13 @@ const availableFunctions = {
       longStrike: args.longStrike,
       shortStrike2: args.shortStrike2,
       longStrike2: args.longStrike2
+    });
+  },
+  getChartTechnicalAnalysis: async (args) => {
+    return await getChartTechnicalAnalysis({
+      symbol: args.symbol,
+      resolution: args.resolution,
+      limit: args.limit
     });
   }
 };

@@ -27,6 +27,15 @@ import {
 } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 
+// Utility to parse currency values
+function parseCurrency(val) {
+  if (val === null || val === undefined) return 0;
+  if (typeof val === 'number') return val;
+  const cleaned = String(val).replace(/[^0-9.-]/g, '');
+  const num = parseFloat(cleaned);
+  return isNaN(num) ? 0 : num;
+}
+
 // Dynamically import the chart to avoid SSR/hydration issues
 const PnlChart = dynamic(() => import('../components/PnlChart'), { ssr: false });
 
@@ -225,9 +234,8 @@ export default function Dashboard() {
         setIsDemo(false);
         await Promise.all([fetchTradesFromDB(), fetchProfileFromDB()]);
       } else {
-        setTrades(DEMO_TRADES);
-        setProfile(DEMO_PROFILE);
-        setLoadingTrades(false);
+        setIsDemo(true);
+        await Promise.all([fetchLocalTrades(), fetchLocalProfile()]);
       }
       await fetchMarketData();
     }
@@ -261,6 +269,44 @@ export default function Dashboard() {
 
     return () => clearInterval(intervalId);
   }, []);
+
+  // Local File CRUD Functions (when Supabase is disabled)
+  async function fetchLocalTrades() {
+    try {
+      setLoadingTrades(true);
+      const res = await fetch('/api/trades');
+      const data = await res.json();
+      if (data.success) {
+        setTrades(data.trades || []);
+      } else {
+        setTrades(DEMO_TRADES);
+      }
+    } catch (e) {
+      console.error('Failed to fetch local trades:', e);
+      setTrades(DEMO_TRADES);
+    } finally {
+      setLoadingTrades(false);
+    }
+  }
+
+  async function fetchLocalProfile() {
+    try {
+      const res = await fetch('/api/profile');
+      const data = await res.json();
+      if (data.success && data.profile) {
+        setProfile({
+          capital: Number(data.profile.capital) || 500,
+          riskTolerance: Number(data.profile.riskTolerance) || 0.02,
+          minRR: Number(data.profile.minRR) || 0.20,
+          preferredExpiry: data.profile.preferredExpiry || 'Weekly',
+          preferredStrategies: data.profile.preferredStrategies || [],
+          notes: data.profile.notes || ''
+        });
+      }
+    } catch (e) {
+      console.error('Failed to fetch local profile:', e);
+    }
+  }
 
   // DB Fetching Functions
   async function fetchTradesFromDB() {
@@ -352,12 +398,15 @@ export default function Dashboard() {
           if (!isDemo) {
             await fetchTradesFromDB();
           } else {
-            // Trigger local refresh if demo (creates visual response)
-            alert('Trade was logged! Running in Demo mode, refresh local list manually or connect Supabase.');
+            await fetchLocalTrades();
           }
         }
         if (data.profileUpdated) {
-          await fetchProfileFromDB();
+          if (!isDemo) {
+            await fetchProfileFromDB();
+          } else {
+            await fetchLocalProfile();
+          }
         }
       } else {
         setChatError(data.error || 'Failed to get a response from the assistant.');
@@ -399,6 +448,9 @@ export default function Dashboard() {
         ivClassification: marketSummary.ivClassification || null,
         support: marketSummary.support || null,
         resistance: marketSummary.resistance || null,
+        chartSupport: marketSummary.chartSupport || null,
+        chartResistance: marketSummary.chartResistance || null,
+        chartTrend: marketSummary.chartTrend || null,
         pcr: marketSummary.pcr || null,
         fundingRate: marketSummary.funding?.rate !== undefined ? marketSummary.funding.rate : null,
         fundingSentiment: marketSummary.funding?.sentiment || null,
@@ -408,8 +460,21 @@ export default function Dashboard() {
     };
 
     if (isDemo) {
-      const id = Math.floor(Math.random() * 1000) + 1;
-      setTrades([{ id, ...tradeToSave }, ...trades]);
+      try {
+        const res = await fetch('/api/trades', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(tradeToSave)
+        });
+        const data = await res.json();
+        if (data.success) {
+          setTrades(data.trades);
+        } else {
+          alert('Log trade failed: ' + data.error);
+        }
+      } catch (err) {
+        alert('Communication error: ' + err.message);
+      }
     } else {
       try {
         const { error } = await supabase
@@ -445,18 +510,33 @@ export default function Dashboard() {
     let pnlValue = null;
 
     if (outcome === 'win') {
-      resultString = `Profit +$${Number(trade.reward).toFixed(2)}`;
-      pnlValue = Number(trade.reward);
+      const rewardVal = parseCurrency(trade.reward);
+      resultString = `Profit +$${rewardVal.toFixed(2)}`;
+      pnlValue = rewardVal;
     } else if (outcome === 'loss') {
-      resultString = `Loss -$${Number(trade.risk).toFixed(2)}`;
-      pnlValue = -Number(trade.risk);
+      const riskVal = parseCurrency(trade.risk);
+      resultString = `Loss -$${riskVal.toFixed(2)}`;
+      pnlValue = -riskVal;
     } else {
       resultString = 'Pending';
       pnlValue = null;
     }
 
     if (isDemo) {
-      setTrades(trades.map(t => t.id === id ? { ...t, result: resultString, pnl: pnlValue } : t));
+      try {
+        const updatedTrade = { ...trade, result: resultString, pnl: pnlValue };
+        const res = await fetch('/api/trades', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(updatedTrade)
+        });
+        const data = await res.json();
+        if (data.success) {
+          setTrades(data.trades);
+        }
+      } catch (err) {
+        console.error('Failed to update trade locally:', err);
+      }
     } else {
       try {
         const { error } = await supabase
@@ -476,7 +556,19 @@ export default function Dashboard() {
     if (!confirm('Are you sure you want to delete this trade?')) return;
 
     if (isDemo) {
-      setTrades(trades.filter(t => t.id !== id));
+      try {
+        const res = await fetch(`/api/trades?id=${id}`, {
+          method: 'DELETE'
+        });
+        const data = await res.json();
+        if (data.success) {
+          setTrades(data.trades);
+        } else {
+          alert('Delete failed: ' + data.error);
+        }
+      } catch (err) {
+        alert('Communication error: ' + err.message);
+      }
     } else {
       try {
         const { error } = await supabase
@@ -513,7 +605,19 @@ export default function Dashboard() {
     };
 
     if (isDemo) {
-      setProfile(updatedProfile);
+      try {
+        const res = await fetch('/api/profile', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(updatedProfile)
+        });
+        const data = await res.json();
+        if (data.success) {
+          setProfile(data.profile);
+        }
+      } catch (err) {
+        console.error('Failed to save settings locally:', err);
+      }
     } else {
       try {
         const dbProfile = {
@@ -698,13 +802,17 @@ export default function Dashboard() {
 
         <div className="flex items-center gap-3">
           <span className="flex items-center gap-1.5 text-xs text-slate-400 border border-slate-800 bg-slate-900/60 px-2.5 py-1 rounded-full">
-            <span className={`h-2 w-2 rounded-full ${isDemo ? 'bg-amber-500 animate-pulse' : 'bg-emerald-500'}`} />
-            {isDemo ? 'Demo Database' : 'Supabase Live'}
+            <span className={`h-2 w-2 rounded-full ${isDemo ? 'bg-indigo-400 animate-pulse' : 'bg-emerald-500'}`} />
+            {isDemo ? 'Local File DB' : 'Supabase Live'}
           </span>
 
           <button
             onClick={() => {
-              if (!isDemo) fetchTradesFromDB();
+              if (!isDemo) {
+                fetchTradesFromDB();
+              } else {
+                fetchLocalTrades();
+              }
               fetchMarketData();
             }}
             disabled={refreshingMarket}
@@ -1061,9 +1169,27 @@ export default function Dashboard() {
                     <span className="font-semibold text-slate-200">${marketSummary.maxPain?.toLocaleString()}</span>
                   </div>
                   <div className="flex justify-between text-xs pt-1 border-t border-slate-800">
-                    <span className="text-slate-400">Support / Resistance:</span>
+                    <span className="text-slate-400">Options S/R (OI):</span>
                     <span className="font-semibold text-slate-300">${marketSummary.support?.toLocaleString()} / ${marketSummary.resistance?.toLocaleString()}</span>
                   </div>
+                  {marketSummary.chartSupport !== undefined && marketSummary.chartSupport !== null && (
+                    <>
+                      <div className="flex justify-between text-xs pt-1 border-t border-slate-900/60">
+                        <span className="text-slate-400">4H Chart S/R (Price):</span>
+                        <span className="font-semibold text-indigo-400">${marketSummary.chartSupport?.toLocaleString()} / ${marketSummary.chartResistance?.toLocaleString()}</span>
+                      </div>
+                      <div className="flex justify-between text-xs pt-1">
+                        <span className="text-slate-400">4H Chart Trend:</span>
+                        <span className={`font-semibold ${
+                          marketSummary.chartTrend === 'Uptrend' 
+                            ? 'text-emerald-400' 
+                            : marketSummary.chartTrend === 'Downtrend' 
+                              ? 'text-rose-400' 
+                              : 'text-amber-400'
+                        }`}>{marketSummary.chartTrend}</span>
+                      </div>
+                    </>
+                  )}
                 </div>
               </div>
 
