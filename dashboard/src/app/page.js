@@ -23,7 +23,16 @@ import {
   Send,
   MessageSquare,
   Bot,
-  Eye
+  Eye,
+  FileText,
+  Clock,
+  Brain,
+  ArrowUpDown,
+  Crosshair,
+  PenLine,
+  BarChart3,
+  ChevronDown,
+  ChevronUp
 } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 
@@ -36,8 +45,9 @@ function parseCurrency(val) {
   return isNaN(num) ? 0 : num;
 }
 
-// Dynamically import the chart to avoid SSR/hydration issues
+// Dynamically import the charts to avoid SSR/hydration issues
 const PnlChart = dynamic(() => import('../components/PnlChart'), { ssr: false });
+const StrategyPayoffChart = dynamic(() => import('../components/StrategyPayoffChart'), { ssr: false });
 
 const DEMO_TRADES = [
   {
@@ -180,6 +190,12 @@ export default function Dashboard() {
   const [liveTickers, setLiveTickers] = useState({});
   const [selectedInspectTrade, setSelectedInspectTrade] = useState(null);
   
+  // Running notes & post-trade review states
+  const [runningNoteInput, setRunningNoteInput] = useState('');
+  const [postTradeReview, setPostTradeReview] = useState(null);
+  const [generatingReview, setGeneratingReview] = useState(false);
+  const [inspectTab, setInspectTab] = useState('overview'); // 'overview' | 'notes' | 'review'
+  
   // Loading states
   const [loadingTrades, setLoadingTrades] = useState(true);
   const [loadingMarket, setLoadingMarket] = useState(true);
@@ -213,7 +229,14 @@ export default function Dashboard() {
     result: 'Pending',
     lessons: '',
     legs: [],
-    legsText: ''
+    legsText: '',
+    // Enhanced market view fields
+    trendDirection4H: 'Side Base',
+    swingForecast: 'Stay Between Price',
+    supportLevel: '',
+    resistanceLevel: '',
+    entryPrice: '',
+    traderRationale: ''
   });
   
   const [profileForm, setProfileForm] = useState({
@@ -456,7 +479,17 @@ export default function Dashboard() {
         fundingSentiment: marketSummary.funding?.sentiment || null,
         signalsAligned: marketSummary.confidenceInputs?.signalsAligned || 0,
         signalsConflicting: marketSummary.confidenceInputs?.signalsConflicting || 0
-      } : null
+      } : null,
+      market_view: {
+        trendDirection4H: newTrade.trendDirection4H || 'Side Base',
+        swingForecast: newTrade.swingForecast || 'Stay Between Price',
+        supportLevel: parseFloat(newTrade.supportLevel) || null,
+        resistanceLevel: parseFloat(newTrade.resistanceLevel) || null,
+        entryPrice: parseFloat(newTrade.entryPrice) || null,
+        traderRationale: newTrade.traderRationale || ''
+      },
+      running_notes: [],
+      post_trade_review: null
     };
 
     if (isDemo) {
@@ -498,7 +531,13 @@ export default function Dashboard() {
       result: 'Pending',
       lessons: '',
       legs: [],
-      legsText: ''
+      legsText: '',
+      trendDirection4H: 'Side Base',
+      swingForecast: 'Stay Between Price',
+      supportLevel: '',
+      resistanceLevel: '',
+      entryPrice: '',
+      traderRationale: ''
     });
   }
 
@@ -655,6 +694,120 @@ export default function Dashboard() {
     setShowSettingsModal(true);
   };
 
+  // â”€â”€ Running Notes Handler â”€â”€
+  async function handleAddRunningNote(tradeId) {
+    if (!runningNoteInput.trim()) return;
+    const timestamp = new Date().toISOString();
+    const note = { timestamp, text: runningNoteInput.trim() };
+    
+    const trade = trades.find(t => t.id === tradeId);
+    if (!trade) return;
+    
+    const existingNotes = trade.running_notes || [];
+    const updatedNotes = [...existingNotes, note];
+    
+    if (isDemo) {
+      setTrades(trades.map(t => t.id === tradeId ? { ...t, running_notes: updatedNotes } : t));
+      setSelectedInspectTrade(prev => prev ? { ...prev, running_notes: updatedNotes } : prev);
+    } else {
+      try {
+        const { error } = await supabase
+          .from('trade_journal')
+          .update({ running_notes: updatedNotes })
+          .eq('id', tradeId);
+        if (error) throw error;
+        await fetchTradesFromDB();
+        setSelectedInspectTrade(prev => prev ? { ...prev, running_notes: updatedNotes } : prev);
+      } catch (err) {
+        alert('Failed to add note: ' + err.message);
+      }
+    }
+    setRunningNoteInput('');
+  }
+
+  // â”€â”€ View Comparison Update â”€â”€
+  async function handleUpdateViewCorrectness(tradeId, field, value) {
+    const trade = trades.find(t => t.id === tradeId);
+    if (!trade) return;
+
+    const currentReview = trade.post_trade_review || {};
+    const updatedReview = { ...currentReview, [field]: value };
+
+    if (isDemo) {
+      setTrades(trades.map(t => t.id === tradeId ? { ...t, post_trade_review: updatedReview } : t));
+      setSelectedInspectTrade(prev => prev ? { ...prev, post_trade_review: updatedReview } : prev);
+    } else {
+      try {
+        const { error } = await supabase
+          .from('trade_journal')
+          .update({ post_trade_review: updatedReview })
+          .eq('id', tradeId);
+        if (error) throw error;
+        await fetchTradesFromDB();
+        setSelectedInspectTrade(prev => prev ? { ...prev, post_trade_review: updatedReview } : prev);
+      } catch (err) {
+        alert('Failed to update view: ' + err.message);
+      }
+    }
+  }
+
+  // â”€â”€ AI Post-Mortem Review Generator â”€â”€
+  async function handleGeneratePostMortem(trade) {
+    setGeneratingReview(true);
+    setPostTradeReview(null);
+    try {
+      const res = await fetch('/api/trade-review', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          trade: {
+            date: trade.date,
+            strategy: trade.strategy,
+            market_state: trade.market_state,
+            risk: trade.risk,
+            reward: trade.reward,
+            result: trade.result,
+            pnl: trade.pnl,
+            lessons: trade.lessons,
+            legs: trade.legs,
+            entry_factors: trade.entry_factors,
+            market_view: trade.market_view,
+            running_notes: trade.running_notes,
+            post_trade_review: trade.post_trade_review
+          }
+        })
+      });
+      const data = await res.json();
+      if (data.success && data.review) {
+        setPostTradeReview(data.review);
+        // Also save the AI review to the trade record
+        const currentReview = trade.post_trade_review || {};
+        const updatedReview = { ...currentReview, aiPostMortem: data.review, aiReviewDate: new Date().toISOString() };
+        if (isDemo) {
+          setTrades(prev => prev.map(t => t.id === trade.id ? { ...t, post_trade_review: updatedReview } : t));
+          setSelectedInspectTrade(prev => prev ? { ...prev, post_trade_review: updatedReview } : prev);
+        } else {
+          try {
+            await supabase
+              .from('trade_journal')
+              .update({ post_trade_review: updatedReview })
+              .eq('id', trade.id);
+            await fetchTradesFromDB();
+            setSelectedInspectTrade(prev => prev ? { ...prev, post_trade_review: updatedReview } : prev);
+          } catch (e) {
+            console.error('Failed to save AI review:', e);
+          }
+        }
+      } else {
+        setPostTradeReview('Failed to generate review: ' + (data.error || 'Unknown error'));
+      }
+    } catch (err) {
+      setPostTradeReview('Error communicating with review API: ' + err.message);
+    } finally {
+      setGeneratingReview(false);
+    }
+  }
+
   // Markdown Parser
   function parseInlineBold(text) {
     const parts = text.split(/(\*\*.*?\*\*)/g);
@@ -790,7 +943,7 @@ export default function Dashboard() {
       <header className="border-b border-slate-900 bg-[#0B0F19]/90 backdrop-blur sticky top-0 z-40 px-6 py-4 flex items-center justify-between">
         <div className="flex items-center gap-3">
           <div className="h-9 w-9 bg-gradient-to-tr from-cyan-500 to-indigo-500 rounded-lg flex items-center justify-center font-bold text-black shadow-[0_0_15px_rgba(6,182,212,0.3)]">
-            Δ
+            Î”
           </div>
           <div>
             <h1 className="text-lg font-bold tracking-wider text-transparent bg-clip-text bg-gradient-to-r from-cyan-400 to-indigo-300">
@@ -1009,7 +1162,7 @@ export default function Dashboard() {
                     disabled={sendingPrompt}
                     className="w-full text-left text-xs font-semibold px-3 py-2.5 border border-slate-800 hover:border-cyan-500/50 bg-[#161C2C]/30 hover:bg-[#1C253B]/50 rounded-lg transition text-cyan-400 flex items-center justify-between group cursor-pointer"
                   >
-                    <span>✨ Recommend Options Strategy</span>
+                    <span>âœ¨ Recommend Options Strategy</span>
                     <Plus size={12} className="opacity-0 group-hover:opacity-100 transition" />
                   </button>
 
@@ -1018,7 +1171,7 @@ export default function Dashboard() {
                     disabled={sendingPrompt}
                     className="w-full text-left text-xs font-semibold px-3 py-2.5 border border-slate-800 hover:border-indigo-500/50 bg-[#161C2C]/30 hover:bg-[#1C253B]/50 rounded-lg transition text-indigo-400 flex items-center justify-between group cursor-pointer"
                   >
-                    <span>📊 Explain ATM Greeks & Bias</span>
+                    <span>ðŸ“Š Explain ATM Greeks & Bias</span>
                     <Plus size={12} className="opacity-0 group-hover:opacity-100 transition" />
                   </button>
 
@@ -1027,14 +1180,14 @@ export default function Dashboard() {
                     disabled={sendingPrompt}
                     className="w-full text-left text-xs font-semibold px-3 py-2.5 border border-slate-800 hover:border-purple-500/50 bg-[#161C2C]/30 hover:bg-[#1C253B]/50 rounded-lg transition text-purple-400 flex items-center justify-between group cursor-pointer"
                   >
-                    <span>📈 Evaluate Sizing & History</span>
+                    <span>ðŸ“ˆ Evaluate Sizing & History</span>
                     <Plus size={12} className="opacity-0 group-hover:opacity-100 transition" />
                   </button>
                 </div>
               </div>
 
               <div className="bg-slate-900/60 border border-slate-800/80 rounded-xl p-4 text-[11px] text-slate-500 leading-relaxed">
-                💡 <strong>Tip:</strong> Ask the assistant to log trades in conversation (e.g. <em>"Log a trade. Strategy is Bull Put Spread, risk is $100, reward is $25..."</em>). The database logs will auto-sync on the dashboard!
+                ðŸ’¡ <strong>Tip:</strong> Ask the assistant to log trades in conversation (e.g. <em>"Log a trade. Strategy is Bull Put Spread, risk is $100, reward is $25..."</em>). The database logs will auto-sync on the dashboard!
               </div>
             </div>
 
@@ -1365,123 +1518,241 @@ export default function Dashboard() {
         </section>
       </div>
 
-      {/* MODAL 1: Add Trade Form */}
+      {/* MODAL 1: Enhanced Log Trade Form */}
       {showAddModal && (
         <div className="fixed inset-0 z-50 bg-black/75 flex items-center justify-center p-4 backdrop-blur-sm">
-          <div className="bg-[#0B0F19] border border-slate-800 rounded-xl w-full max-w-md overflow-hidden shadow-2xl">
+          <div className="bg-[#0B0F19] border border-slate-800 rounded-xl w-full max-w-2xl overflow-hidden shadow-2xl">
             <div className="px-6 py-4 border-b border-slate-900 flex items-center justify-between">
-              <h3 className="font-bold text-slate-200">Log Options Trade</h3>
+              <div className="flex items-center gap-2">
+                <div className="h-7 w-7 bg-gradient-to-tr from-cyan-500 to-indigo-500 rounded-lg flex items-center justify-center">
+                  <FileText size={14} className="text-black" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-slate-200">Log Options Trade</h3>
+                  <p className="text-[10px] text-slate-500">Record your pre-trade view & market analysis</p>
+                </div>
+              </div>
               <button onClick={() => setShowAddModal(false)} className="text-slate-400 hover:text-white cursor-pointer">
                 <X size={18} />
               </button>
             </div>
-            <form onSubmit={handleAddTrade} className="p-6 space-y-4">
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1">Date</label>
-                  <input
-                    type="date"
-                    required
-                    value={newTrade.date}
-                    onChange={(e) => setNewTrade({ ...newTrade, date: e.target.value })}
-                    className="w-full text-sm bg-slate-900 border border-slate-800 rounded p-2 focus:outline-none focus:border-cyan-500 text-slate-200 font-mono"
-                  />
+            <form onSubmit={handleAddTrade} className="p-6 space-y-5 max-h-[80vh] overflow-y-auto">
+              {/* Section: Trade Basics */}
+              <div>
+                <h4 className="text-[10px] font-bold uppercase tracking-widest text-cyan-400 mb-3 flex items-center gap-1.5">
+                  <Layers size={12} /> Trade Setup
+                </h4>
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1">Date</label>
+                    <input
+                      type="date"
+                      required
+                      value={newTrade.date}
+                      onChange={(e) => setNewTrade({ ...newTrade, date: e.target.value })}
+                      className="w-full text-sm bg-slate-900 border border-slate-800 rounded p-2 focus:outline-none focus:border-cyan-500 text-slate-200 font-mono"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1">Market State</label>
+                    <select
+                      value={newTrade.market_state}
+                      onChange={(e) => setNewTrade({ ...newTrade, market_state: e.target.value })}
+                      className="w-full text-sm bg-slate-900 border border-slate-800 rounded p-2 focus:outline-none focus:border-cyan-500 text-slate-200"
+                    >
+                      <option value="Trending Up">Trending Up</option>
+                      <option value="Trending Down">Trending Down</option>
+                      <option value="Range Bound">Range Bound</option>
+                      <option value="Breakout">Breakout</option>
+                      <option value="Sideways">Sideways</option>
+                    </select>
+                  </div>
                 </div>
-                <div>
-                  <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1">Market State</label>
+
+                <div className="mt-3">
+                  <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1">Strategy</label>
                   <select
-                    value={newTrade.market_state}
-                    onChange={(e) => setNewTrade({ ...newTrade, market_state: e.target.value })}
+                    value={newTrade.strategy}
+                    onChange={(e) => setNewTrade({ ...newTrade, strategy: e.target.value })}
                     className="w-full text-sm bg-slate-900 border border-slate-800 rounded p-2 focus:outline-none focus:border-cyan-500 text-slate-200"
                   >
-                    <option value="Trending Up">Trending Up</option>
-                    <option value="Trending Down">Trending Down</option>
-                    <option value="Range Bound">Range Bound</option>
-                    <option value="Breakout">Breakout</option>
-                    <option value="Sideways">Sideways</option>
+                    <option value="Bull Put Credit Spread">Bull Put Credit Spread</option>
+                    <option value="Bear Call Credit Spread">Bear Call Credit Spread</option>
+                    <option value="Iron Condor">Iron Condor</option>
+                    <option value="Long Call (CE)">Long Call (CE)</option>
+                    <option value="Long Put (PE)">Long Put (PE)</option>
                   </select>
                 </div>
-              </div>
 
-              <div>
-                <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1">Strategy</label>
-                <select
-                  value={newTrade.strategy}
-                  onChange={(e) => setNewTrade({ ...newTrade, strategy: e.target.value })}
-                  className="w-full text-sm bg-slate-900 border border-slate-800 rounded p-2 focus:outline-none focus:border-cyan-500 text-slate-200"
-                >
-                  <option value="Bull Put Credit Spread">Bull Put Credit Spread</option>
-                  <option value="Bear Call Credit Spread">Bear Call Credit Spread</option>
-                  <option value="Iron Condor">Iron Condor</option>
-                  <option value="Long Call (CE)">Long Call (CE)</option>
-                  <option value="Long Put (PE)">Long Put (PE)</option>
-                </select>
-              </div>
-
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1">Max Risk ($)</label>
-                  <input
-                    type="number"
-                    step="0.01"
-                    required
-                    placeholder="e.g. 10.00"
-                    value={newTrade.risk}
-                    onChange={(e) => setNewTrade({ ...newTrade, risk: e.target.value })}
-                    className="w-full text-sm bg-slate-900 border border-slate-800 rounded p-2 focus:outline-none focus:border-cyan-500 text-slate-200"
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1">Max Reward ($)</label>
-                  <input
-                    type="number"
-                    step="0.01"
-                    required
-                    placeholder="e.g. 2.50"
-                    value={newTrade.reward}
-                    onChange={(e) => setNewTrade({ ...newTrade, reward: e.target.value })}
-                    className="w-full text-sm bg-slate-900 border border-slate-800 rounded p-2 focus:outline-none focus:border-cyan-500 text-slate-200"
-                  />
+                <div className="grid grid-cols-2 gap-4 mt-3">
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1">Max Risk ($)</label>
+                    <input
+                      type="number"
+                      step="0.01"
+                      required
+                      placeholder="e.g. 10.00"
+                      value={newTrade.risk}
+                      onChange={(e) => setNewTrade({ ...newTrade, risk: e.target.value })}
+                      className="w-full text-sm bg-slate-900 border border-slate-800 rounded p-2 focus:outline-none focus:border-cyan-500 text-slate-200"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1">Max Reward ($)</label>
+                    <input
+                      type="number"
+                      step="0.01"
+                      required
+                      placeholder="e.g. 2.50"
+                      value={newTrade.reward}
+                      onChange={(e) => setNewTrade({ ...newTrade, reward: e.target.value })}
+                      className="w-full text-sm bg-slate-900 border border-slate-800 rounded p-2 focus:outline-none focus:border-cyan-500 text-slate-200"
+                    />
+                  </div>
                 </div>
               </div>
 
+              {/* Divider */}
+              <div className="border-t border-slate-800" />
+
+              {/* Section: Your Market View (4H Chart Analysis) */}
               <div>
-                <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1">Reason / AI Rationale</label>
-                <textarea
-                  rows="2"
-                  placeholder="Why did the assistant propose this trade?"
-                  value={newTrade.reason}
-                  onChange={(e) => setNewTrade({ ...newTrade, reason: e.target.value })}
-                  className="w-full text-sm bg-slate-900 border border-slate-800 rounded p-2 focus:outline-none focus:border-cyan-500 text-slate-200"
-                />
+                <h4 className="text-[10px] font-bold uppercase tracking-widest text-indigo-400 mb-3 flex items-center gap-1.5">
+                  <BarChart3 size={12} /> Your Market View (4H Chart)
+                </h4>
+
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1">4H Trend Direction</label>
+                    <div className="flex gap-1.5">
+                      {['Up', 'Side Base', 'Down'].map((dir) => (
+                        <button
+                          key={dir}
+                          type="button"
+                          onClick={() => setNewTrade({ ...newTrade, trendDirection4H: dir })}
+                          className={`flex-1 text-xs font-bold py-2 rounded border transition cursor-pointer ${
+                            newTrade.trendDirection4H === dir
+                              ? dir === 'Up' 
+                                ? 'bg-emerald-500/20 border-emerald-500/50 text-emerald-400'
+                                : dir === 'Down' 
+                                  ? 'bg-rose-500/20 border-rose-500/50 text-rose-400'
+                                  : 'bg-amber-500/20 border-amber-500/50 text-amber-400'
+                              : 'bg-slate-900 border-slate-800 text-slate-500 hover:border-slate-600'
+                          }`}
+                        >
+                          {dir === 'Up' && 'â–²'} {dir === 'Down' && 'â–¼'} {dir === 'Side Base' && 'â—†'} {dir}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1">24-48H Swing Forecast</label>
+                    <select
+                      value={newTrade.swingForecast}
+                      onChange={(e) => setNewTrade({ ...newTrade, swingForecast: e.target.value })}
+                      className="w-full text-sm bg-slate-900 border border-slate-800 rounded p-2 focus:outline-none focus:border-cyan-500 text-slate-200"
+                    >
+                      <option value="Swing Up">â†— Swing Up (Next 24-48H)</option>
+                      <option value="Swing Low">â†˜ Swing Low (Next 24-48H)</option>
+                      <option value="Stay Between Price">â†” Stay Between Price</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-3 gap-3 mt-3">
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1">Support Level ($)</label>
+                    <input
+                      type="number"
+                      step="1"
+                      placeholder={marketSummary?.support?.toLocaleString() || 'e.g. 92000'}
+                      value={newTrade.supportLevel}
+                      onChange={(e) => setNewTrade({ ...newTrade, supportLevel: e.target.value })}
+                      className="w-full text-sm bg-slate-900 border border-slate-800 rounded p-2 focus:outline-none focus:border-emerald-500 text-emerald-300 font-mono"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1">Resistance Level ($)</label>
+                    <input
+                      type="number"
+                      step="1"
+                      placeholder={marketSummary?.resistance?.toLocaleString() || 'e.g. 100000'}
+                      value={newTrade.resistanceLevel}
+                      onChange={(e) => setNewTrade({ ...newTrade, resistanceLevel: e.target.value })}
+                      className="w-full text-sm bg-slate-900 border border-slate-800 rounded p-2 focus:outline-none focus:border-rose-500 text-rose-300 font-mono"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1">Entry Price ($)</label>
+                    <input
+                      type="number"
+                      step="0.01"
+                      placeholder={marketSummary?.btcPrice?.toLocaleString() || 'e.g. 96500'}
+                      value={newTrade.entryPrice}
+                      onChange={(e) => setNewTrade({ ...newTrade, entryPrice: e.target.value })}
+                      className="w-full text-sm bg-slate-900 border border-slate-800 rounded p-2 focus:outline-none focus:border-cyan-500 text-cyan-300 font-mono"
+                    />
+                  </div>
+                </div>
+
+                <div className="mt-3">
+                  <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1">Your Trading Rationale & View</label>
+                  <textarea
+                    rows="2"
+                    placeholder="What is the payoff chart showing? Why are you taking this trade? What does your analysis say..."
+                    value={newTrade.traderRationale}
+                    onChange={(e) => setNewTrade({ ...newTrade, traderRationale: e.target.value })}
+                    className="w-full text-sm bg-slate-900 border border-slate-800 rounded p-2 focus:outline-none focus:border-indigo-500 text-slate-200"
+                  />
+                </div>
               </div>
 
-              <div>
-                <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1">Lessons learned</label>
-                <textarea
-                  rows="2"
-                  placeholder="Post-trade evaluation (optional)"
-                  value={newTrade.lessons}
-                  onChange={(e) => setNewTrade({ ...newTrade, lessons: e.target.value })}
-                  className="w-full text-sm bg-slate-900 border border-slate-800 rounded p-2 focus:outline-none focus:border-cyan-500 text-slate-200"
-                />
-              </div>
+              {/* Divider */}
+              <div className="border-t border-slate-800" />
 
+              {/* Section: AI & Execution Details */}
               <div>
-                <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1">Option Legs (JSON Array - Optional)</label>
-                <textarea
-                  rows="2"
-                  placeholder='e.g. [{"symbol":"P-BTC-62000-170726", "strike":62000, "type":"P", "action":"sell", "entry_price":15.00, "quantity":2}]'
-                  value={newTrade.legsText || ''}
-                  onChange={(e) => {
-                    let parsed = [];
-                    try {
-                      parsed = JSON.parse(e.target.value);
-                    } catch (err) {}
-                    setNewTrade({ ...newTrade, legsText: e.target.value, legs: parsed });
-                  }}
-                  className="w-full text-xs font-mono bg-slate-900 border border-slate-800 rounded p-2 focus:outline-none focus:border-cyan-500 text-slate-200"
-                />
+                <h4 className="text-[10px] font-bold uppercase tracking-widest text-purple-400 mb-3 flex items-center gap-1.5">
+                  <Bot size={12} /> AI Rationale & Execution
+                </h4>
+                <div>
+                  <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1">AI Reason / Rationale</label>
+                  <textarea
+                    rows="2"
+                    placeholder="Why did the AI assistant propose this trade?"
+                    value={newTrade.reason}
+                    onChange={(e) => setNewTrade({ ...newTrade, reason: e.target.value })}
+                    className="w-full text-sm bg-slate-900 border border-slate-800 rounded p-2 focus:outline-none focus:border-cyan-500 text-slate-200"
+                  />
+                </div>
+
+                <div className="mt-3">
+                  <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1">Lessons Learned (Optional)</label>
+                  <textarea
+                    rows="2"
+                    placeholder="Post-trade evaluation (can fill later)"
+                    value={newTrade.lessons}
+                    onChange={(e) => setNewTrade({ ...newTrade, lessons: e.target.value })}
+                    className="w-full text-sm bg-slate-900 border border-slate-800 rounded p-2 focus:outline-none focus:border-cyan-500 text-slate-200"
+                  />
+                </div>
+
+                <div className="mt-3">
+                  <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1">Option Legs (JSON Array - Optional)</label>
+                  <textarea
+                    rows="2"
+                    placeholder='e.g. [{"symbol":"P-BTC-62000-170726", "strike":62000, "type":"P", "action":"sell", "entry_price":15.00, "quantity":2}]'
+                    value={newTrade.legsText || ''}
+                    onChange={(e) => {
+                      let parsed = [];
+                      try {
+                        parsed = JSON.parse(e.target.value);
+                      } catch (err) {}
+                      setNewTrade({ ...newTrade, legsText: e.target.value, legs: parsed });
+                    }}
+                    className="w-full text-xs font-mono bg-slate-900 border border-slate-800 rounded p-2 focus:outline-none focus:border-cyan-500 text-slate-200"
+                  />
+                </div>
               </div>
 
               <div className="pt-2">
@@ -1591,144 +1862,318 @@ export default function Dashboard() {
           </div>
         </div>
       )}
-      {/* MODAL 3: Inspect Trade (legs & factors) */}
+      {/* MODAL 3: Enhanced Trade Inspection & Journal */}
       {selectedInspectTrade && (
         <div className="fixed inset-0 z-50 bg-black/75 flex items-center justify-center p-4 backdrop-blur-sm">
-          <div className="bg-[#0B0F19] border border-slate-800 rounded-xl w-full max-w-2xl overflow-hidden shadow-2xl">
+          <div className="bg-[#0B0F19] border border-slate-800 rounded-xl w-full max-w-3xl overflow-hidden shadow-2xl">
+            {/* Header */}
             <div className="px-6 py-4 border-b border-slate-900 flex items-center justify-between">
-              <div>
-                <h3 className="font-bold text-slate-200 text-base">{selectedInspectTrade.strategy}</h3>
-                <p className="text-[10px] text-slate-500 mt-0.5 font-mono">Date: {selectedInspectTrade.date} | Market State: {selectedInspectTrade.market_state}</p>
+              <div className="flex items-center gap-3">
+                <div className="h-9 w-9 bg-gradient-to-tr from-cyan-500 to-indigo-500 rounded-lg flex items-center justify-center font-bold text-black text-xs shadow-md">TJ</div>
+                <div>
+                  <h3 className="font-bold text-slate-200 text-base">{selectedInspectTrade.strategy}</h3>
+                  <div className="flex items-center gap-2 mt-0.5">
+                    <span className="text-[10px] text-slate-500 font-mono">Date: {selectedInspectTrade.date}</span>
+                    <span className="text-[10px] bg-slate-900 border border-slate-800 text-slate-400 px-1.5 py-0.5 rounded">{selectedInspectTrade.market_state}</span>
+                    {selectedInspectTrade.result && selectedInspectTrade.result !== 'Pending' && (selectedInspectTrade.result.toLowerCase().includes('profit') || selectedInspectTrade.result.toLowerCase().includes('loss')) ? (
+                      <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded border ${selectedInspectTrade.pnl > 0 ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' : 'bg-rose-500/10 text-rose-400 border-rose-500/20'}`}>{selectedInspectTrade.result}</span>
+                    ) : (
+                      <span className="text-[10px] font-bold bg-amber-500/10 text-amber-400 border border-amber-500/20 px-1.5 py-0.5 rounded animate-pulse">LIVE</span>
+                    )}
+                  </div>
+                </div>
               </div>
-              <button onClick={() => setSelectedInspectTrade(null)} className="text-slate-400 hover:text-white cursor-pointer">
-                <X size={18} />
-              </button>
+              <button onClick={() => { setSelectedInspectTrade(null); setPostTradeReview(null); setInspectTab('overview'); }} className="text-slate-400 hover:text-white cursor-pointer"><X size={18} /></button>
             </div>
             
-            <div className="p-6 space-y-6 max-h-[75vh] overflow-y-auto">
-              {/* Section 1: Option Legs */}
-              <div>
-                <h4 className="text-xs font-bold uppercase tracking-wider text-cyan-400 mb-2.5">Trade Legs / Position Structure</h4>
-                {selectedInspectTrade.legs && selectedInspectTrade.legs.length > 0 ? (
-                  <div className="border border-slate-900 rounded-lg overflow-hidden bg-slate-950/40">
-                    <table className="w-full text-left text-xs border-collapse">
-                      <thead>
-                        <tr className="border-b border-slate-900 text-slate-400 bg-slate-950/80">
-                          <th className="py-2.5 px-3">Symbol</th>
-                          <th className="py-2.5 px-3">Strike</th>
-                          <th className="py-2.5 px-3">Type</th>
-                          <th className="py-2.5 px-3">Action</th>
-                          <th className="py-2.5 px-3 text-right">Entry Premium</th>
-                          <th className="py-2.5 px-3 text-right">Qty (BTC)</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-900 text-slate-300 font-mono">
-                        {selectedInspectTrade.legs.map((leg, idx) => (
-                          <tr key={idx} className="hover:bg-slate-900/20">
-                            <td className="py-2.5 px-3 text-slate-400 font-semibold">{leg.symbol}</td>
-                            <td className="py-2.5 px-3">{leg.strike?.toLocaleString() || leg.strike}</td>
-                            <td className="py-2.5 px-3">
-                              <span className={`px-1.5 py-0.5 rounded text-[10px] font-sans font-bold ${leg.type === 'C' ? 'bg-cyan-500/10 text-cyan-400' : 'bg-purple-500/10 text-purple-400'}`}>
-                                {leg.type === 'C' ? 'Call' : 'Put'}
-                              </span>
-                            </td>
-                            <td className="py-2.5 px-3">
-                              <span className={`px-1.5 py-0.5 rounded text-[10px] font-sans font-bold ${leg.action === 'buy' ? 'bg-emerald-500/10 text-emerald-400' : 'bg-rose-500/10 text-rose-400'}`}>
-                                {leg.action?.toUpperCase() || leg.action}
-                              </span>
-                            </td>
-                            <td className="py-2.5 px-3 text-right">${leg.entry_price?.toFixed(2) || leg.entry_price}</td>
-                            <td className="py-2.5 px-3 text-right">{leg.quantity}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                ) : (
-                  <p className="text-xs text-slate-500 italic">No leg structures stored for this trade.</p>
-                )}
-              </div>
+            {/* Tab Navigation */}
+            <div className="flex border-b border-slate-900 bg-[#0E1320]/50">
+              {[
+                { key: 'overview', label: 'Overview & View', icon: <Eye size={13} /> },
+                { key: 'notes', label: 'Running Notes', icon: <PenLine size={13} /> },
+                { key: 'review', label: 'Post-Trade Review', icon: <Brain size={13} /> }
+              ].map((tab) => (
+                <button key={tab.key} onClick={() => setInspectTab(tab.key)}
+                  className={`flex-1 flex items-center justify-center gap-1.5 text-xs font-semibold py-3 transition cursor-pointer border-b-2 ${inspectTab === tab.key ? 'border-cyan-500 text-cyan-400 bg-cyan-500/5' : 'border-transparent text-slate-500 hover:text-slate-300 hover:bg-slate-900/30'}`}>
+                  {tab.icon} {tab.label}
+                </button>
+              ))}
+            </div>
 
-              {/* Section 2: Entry Factors */}
-              <div>
-                <h4 className="text-xs font-bold uppercase tracking-wider text-cyan-400 mb-2.5">Entry Market Factors (Snapshot)</h4>
-                {selectedInspectTrade.entry_factors ? (
-                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
-                    <div className="bg-[#121824]/40 border border-slate-900 rounded-lg p-3">
-                      <p className="text-[10px] text-slate-500 uppercase font-semibold">BTC Price</p>
-                      <p className="text-sm font-bold text-slate-200 font-mono mt-0.5">${selectedInspectTrade.entry_factors.btcPrice?.toLocaleString() || '-'}</p>
+            {/* Tab Content */}
+            <div className="p-6 max-h-[65vh] overflow-y-auto space-y-6">
+              
+              {/* â”€â”€â”€ TAB: Overview â”€â”€â”€ */}
+              {inspectTab === 'overview' && (<>
+                {/* Pre-Trade Market View */}
+                {selectedInspectTrade.market_view && (
+                  <div>
+                    <h4 className="text-xs font-bold uppercase tracking-wider text-indigo-400 mb-3 flex items-center gap-1.5"><BarChart3 size={14} /> Your Pre-Trade Market View (4H Chart)</h4>
+                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                      <div className="bg-[#121824]/40 border border-slate-900 rounded-lg p-3">
+                        <p className="text-[10px] text-slate-500 uppercase font-semibold">4H Trend</p>
+                        <p className={`text-sm font-bold mt-0.5 ${selectedInspectTrade.market_view.trendDirection4H === 'Up' ? 'text-emerald-400' : selectedInspectTrade.market_view.trendDirection4H === 'Down' ? 'text-rose-400' : 'text-amber-400'}`}>
+                          {selectedInspectTrade.market_view.trendDirection4H === 'Up' && 'â–² '}{selectedInspectTrade.market_view.trendDirection4H === 'Down' && 'â–¼ '}{selectedInspectTrade.market_view.trendDirection4H === 'Side Base' && 'â—† '}{selectedInspectTrade.market_view.trendDirection4H}
+                        </p>
+                      </div>
+                      <div className="bg-[#121824]/40 border border-slate-900 rounded-lg p-3">
+                        <p className="text-[10px] text-slate-500 uppercase font-semibold">24-48H Swing</p>
+                        <p className={`text-sm font-bold mt-0.5 ${selectedInspectTrade.market_view.swingForecast === 'Swing Up' ? 'text-emerald-400' : selectedInspectTrade.market_view.swingForecast === 'Swing Low' ? 'text-rose-400' : 'text-cyan-400'}`}>
+                          {selectedInspectTrade.market_view.swingForecast}
+                        </p>
+                      </div>
+                      <div className="bg-[#121824]/40 border border-slate-900 rounded-lg p-3">
+                        <p className="text-[10px] text-slate-500 uppercase font-semibold">Entry Price</p>
+                        <p className="text-sm font-bold text-cyan-300 font-mono mt-0.5">${selectedInspectTrade.market_view.entryPrice?.toLocaleString() || '-'}</p>
+                      </div>
+                      <div className="bg-[#121824]/40 border border-slate-900 rounded-lg p-3">
+                        <p className="text-[10px] text-slate-500 uppercase font-semibold">Support</p>
+                        <p className="text-sm font-bold text-emerald-300 font-mono mt-0.5">${selectedInspectTrade.market_view.supportLevel?.toLocaleString() || '-'}</p>
+                      </div>
+                      <div className="bg-[#121824]/40 border border-slate-900 rounded-lg p-3">
+                        <p className="text-[10px] text-slate-500 uppercase font-semibold">Resistance</p>
+                        <p className="text-sm font-bold text-rose-300 font-mono mt-0.5">${selectedInspectTrade.market_view.resistanceLevel?.toLocaleString() || '-'}</p>
+                      </div>
                     </div>
-                    <div className="bg-[#121824]/40 border border-slate-900 rounded-lg p-3">
-                      <p className="text-[10px] text-slate-500 uppercase font-semibold">Average ATM IV</p>
-                      <p className="text-sm font-bold text-slate-200 font-mono mt-0.5">
-                        {selectedInspectTrade.entry_factors.averageIV ? `${selectedInspectTrade.entry_factors.averageIV}%` : '-'} 
-                        <span className="text-[10px] text-slate-400 font-sans ml-1">({selectedInspectTrade.entry_factors.ivClassification || '-'})</span>
-                      </p>
-                    </div>
-                    <div className="bg-[#121824]/40 border border-slate-900 rounded-lg p-3">
-                      <p className="text-[10px] text-slate-500 uppercase font-semibold">Support / Resistance</p>
-                      <p className="text-sm font-bold text-slate-200 font-mono mt-0.5">${selectedInspectTrade.entry_factors.support?.toLocaleString()} / ${selectedInspectTrade.entry_factors.resistance?.toLocaleString()}</p>
-                    </div>
-                    <div className="bg-[#121824]/40 border border-slate-900 rounded-lg p-3">
-                      <p className="text-[10px] text-slate-500 uppercase font-semibold">Put/Call Ratio (PCR)</p>
-                      <p className="text-sm font-bold text-slate-200 font-mono mt-0.5">{selectedInspectTrade.entry_factors.pcr || '-'}</p>
-                    </div>
-                    <div className="bg-[#121824]/40 border border-slate-900 rounded-lg p-3">
-                      <p className="text-[10px] text-slate-500 uppercase font-semibold">Funding Rate / Bias</p>
-                      <p className="text-sm font-bold text-slate-200 font-mono mt-0.5">
-                        {selectedInspectTrade.entry_factors.fundingRate ? `${selectedInspectTrade.entry_factors.fundingRate.toFixed(4)}%` : '-'}
-                        <span className="text-[10px] text-slate-400 font-sans ml-1 font-sans">({selectedInspectTrade.entry_factors.fundingSentiment || '-'})</span>
-                      </p>
-                    </div>
-                    <div className="bg-[#121824]/40 border border-slate-900 rounded-lg p-3">
-                      <p className="text-[10px] text-slate-500 uppercase font-semibold">Aligned vs Conflicting</p>
-                      <p className="text-sm font-bold text-slate-200 font-mono mt-0.5">{selectedInspectTrade.entry_factors.signalsAligned} Aligned / {selectedInspectTrade.entry_factors.signalsConflicting} Conflicting</p>
-                    </div>
-                    {selectedInspectTrade.entry_factors.opportunityScore && (
-                      <div className="bg-[#121824]/40 border border-slate-900 rounded-lg p-3 col-span-2 sm:col-span-3">
-                        <p className="text-[10px] text-slate-500 uppercase font-semibold mb-1.5">Opportunity Validation Subscores</p>
-                        <div className="grid grid-cols-3 sm:grid-cols-6 gap-2 text-center text-slate-300 font-mono text-xs">
-                          <div className="bg-slate-950/60 p-1.5 rounded border border-slate-900">
-                            <span className="text-[9px] text-slate-500 block font-sans">Risk/Reward</span>
-                            {selectedInspectTrade.entry_factors.validationScores?.riskReward || '-'}
-                          </div>
-                          <div className="bg-slate-950/60 p-1.5 rounded border border-slate-900">
-                            <span className="text-[9px] text-slate-500 block font-sans">Liquidity</span>
-                            {selectedInspectTrade.entry_factors.validationScores?.liquidity || '-'}
-                          </div>
-                          <div className="bg-slate-950/60 p-1.5 rounded border border-slate-900">
-                            <span className="text-[9px] text-slate-500 block font-sans">Spread</span>
-                            {selectedInspectTrade.entry_factors.validationScores?.spread || '-'}
-                          </div>
-                          <div className="bg-slate-950/60 p-1.5 rounded border border-slate-900">
-                            <span className="text-[9px] text-slate-500 block font-sans">Open Int</span>
-                            {selectedInspectTrade.entry_factors.validationScores?.oi || '-'}
-                          </div>
-                          <div className="bg-slate-950/60 p-1.5 rounded border border-slate-900">
-                            <span className="text-[9px] text-slate-500 block font-sans">Expiry</span>
-                            {selectedInspectTrade.entry_factors.validationScores?.expiry || '-'}
-                          </div>
-                          <div className="bg-slate-950/60 p-1.5 rounded border border-slate-900">
-                            <span className="text-[9px] text-slate-500 block font-sans">Alignment</span>
-                            {selectedInspectTrade.entry_factors.validationScores?.marketAlignment || '-'}
-                          </div>
-                        </div>
+                    {selectedInspectTrade.market_view.traderRationale && (
+                      <div className="mt-3 bg-indigo-500/5 border border-indigo-500/20 rounded-lg p-3">
+                        <p className="text-[10px] text-indigo-400 uppercase font-semibold mb-1">Your Rationale</p>
+                        <p className="text-xs text-slate-300 leading-relaxed">{selectedInspectTrade.market_view.traderRationale}</p>
                       </div>
                     )}
                   </div>
-                ) : (
-                  <p className="text-xs text-slate-500 italic">No pre-trade market factors logged for this trade.</p>
                 )}
-              </div>
+
+                {/* Payoff Chart */}
+                {selectedInspectTrade.legs && selectedInspectTrade.legs.length > 0 && (
+                  <div>
+                    <h4 className="text-xs font-bold uppercase tracking-wider text-cyan-400 mb-2.5 flex items-center gap-1.5"><Activity size={14} /> Strategy Payoff Chart</h4>
+                    <StrategyPayoffChart
+                      strategy={selectedInspectTrade.strategy}
+                      shortStrike={selectedInspectTrade.legs.find(l => l.action === 'sell')?.strike}
+                      longStrike={selectedInspectTrade.legs.find(l => l.action === 'buy')?.strike}
+                      maxRisk={typeof selectedInspectTrade.risk === 'number' ? selectedInspectTrade.risk : parseFloat(String(selectedInspectTrade.risk).replace(/[^0-9.-]/g, ''))}
+                      maxReward={typeof selectedInspectTrade.reward === 'number' ? selectedInspectTrade.reward : parseFloat(String(selectedInspectTrade.reward).replace(/[^0-9.-]/g, ''))}
+                      currentPrice={selectedInspectTrade.market_view?.entryPrice || selectedInspectTrade.entry_factors?.btcPrice || marketSummary?.btcPrice}
+                    />
+                  </div>
+                )}
+
+                {/* Live P&L */}
+                {(!selectedInspectTrade.result || selectedInspectTrade.result === 'Pending') && selectedInspectTrade.legs?.length > 0 && (
+                  <div className="bg-gradient-to-r from-slate-900/80 to-slate-800/30 border border-slate-800 rounded-lg p-4">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="text-[10px] text-slate-500 uppercase font-semibold">Current Live P&L</p>
+                        <div className="text-lg font-bold mt-1"><LivePnlValue value={getTradeUnrealizedPnL(selectedInspectTrade, liveTickers)} isHeaderCard={true} /></div>
+                      </div>
+                      <div className="text-right">
+                        <p className="text-[10px] text-slate-500 uppercase font-semibold">BTC Spot</p>
+                        <p className="text-lg font-bold text-slate-200 font-mono mt-1">${marketSummary?.btcPrice?.toLocaleString() || 'â€”'}</p>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Legs Table */}
+                <div>
+                  <h4 className="text-xs font-bold uppercase tracking-wider text-cyan-400 mb-2.5">Trade Legs</h4>
+                  {selectedInspectTrade.legs?.length > 0 ? (
+                    <div className="border border-slate-900 rounded-lg overflow-hidden bg-slate-950/40">
+                      <table className="w-full text-left text-xs border-collapse">
+                        <thead><tr className="border-b border-slate-900 text-slate-400 bg-slate-950/80">
+                          <th className="py-2.5 px-3">Symbol</th><th className="py-2.5 px-3">Strike</th><th className="py-2.5 px-3">Type</th><th className="py-2.5 px-3">Action</th><th className="py-2.5 px-3 text-right">Entry</th><th className="py-2.5 px-3 text-right">Qty</th>
+                        </tr></thead>
+                        <tbody className="divide-y divide-slate-900 text-slate-300 font-mono">
+                          {selectedInspectTrade.legs.map((leg, idx) => (
+                            <tr key={idx} className="hover:bg-slate-900/20">
+                              <td className="py-2.5 px-3 text-slate-400 font-semibold">{leg.symbol}</td>
+                              <td className="py-2.5 px-3">{leg.strike?.toLocaleString()}</td>
+                              <td className="py-2.5 px-3"><span className={`px-1.5 py-0.5 rounded text-[10px] font-sans font-bold ${leg.type === 'C' ? 'bg-cyan-500/10 text-cyan-400' : 'bg-purple-500/10 text-purple-400'}`}>{leg.type === 'C' ? 'Call' : 'Put'}</span></td>
+                              <td className="py-2.5 px-3"><span className={`px-1.5 py-0.5 rounded text-[10px] font-sans font-bold ${leg.action === 'buy' ? 'bg-emerald-500/10 text-emerald-400' : 'bg-rose-500/10 text-rose-400'}`}>{leg.action?.toUpperCase()}</span></td>
+                              <td className="py-2.5 px-3 text-right">${leg.entry_price?.toFixed(2)}</td>
+                              <td className="py-2.5 px-3 text-right">{leg.quantity}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  ) : (<p className="text-xs text-slate-500 italic">No leg structures stored.</p>)}
+                </div>
+
+                {/* Entry Factors */}
+                <div>
+                  <h4 className="text-xs font-bold uppercase tracking-wider text-cyan-400 mb-2.5">Entry Market Factors</h4>
+                  {selectedInspectTrade.entry_factors ? (
+                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                      <div className="bg-[#121824]/40 border border-slate-900 rounded-lg p-3">
+                        <p className="text-[10px] text-slate-500 uppercase font-semibold">BTC Price</p>
+                        <p className="text-sm font-bold text-slate-200 font-mono mt-0.5">${selectedInspectTrade.entry_factors.btcPrice?.toLocaleString() || '-'}</p>
+                      </div>
+                      <div className="bg-[#121824]/40 border border-slate-900 rounded-lg p-3">
+                        <p className="text-[10px] text-slate-500 uppercase font-semibold">ATM IV</p>
+                        <p className="text-sm font-bold text-slate-200 font-mono mt-0.5">{selectedInspectTrade.entry_factors.averageIV ? `${selectedInspectTrade.entry_factors.averageIV}%` : '-'} <span className="text-[10px] text-slate-400 font-sans ml-1">({selectedInspectTrade.entry_factors.ivClassification || '-'})</span></p>
+                      </div>
+                      <div className="bg-[#121824]/40 border border-slate-900 rounded-lg p-3">
+                        <p className="text-[10px] text-slate-500 uppercase font-semibold">PCR</p>
+                        <p className="text-sm font-bold text-slate-200 font-mono mt-0.5">{selectedInspectTrade.entry_factors.pcr || '-'}</p>
+                      </div>
+                      <div className="bg-[#121824]/40 border border-slate-900 rounded-lg p-3">
+                        <p className="text-[10px] text-slate-500 uppercase font-semibold">Funding</p>
+                        <p className="text-sm font-bold text-slate-200 font-mono mt-0.5">{selectedInspectTrade.entry_factors.fundingRate ? `${selectedInspectTrade.entry_factors.fundingRate.toFixed(4)}%` : '-'}</p>
+                      </div>
+                      <div className="bg-[#121824]/40 border border-slate-900 rounded-lg p-3">
+                        <p className="text-[10px] text-slate-500 uppercase font-semibold">Signals</p>
+                        <p className="text-sm font-bold text-slate-200 font-mono mt-0.5">{selectedInspectTrade.entry_factors.signalsAligned || 0}A / {selectedInspectTrade.entry_factors.signalsConflicting || 0}C</p>
+                      </div>
+                    </div>
+                  ) : (<p className="text-xs text-slate-500 italic">No entry factors logged.</p>)}
+                </div>
+              </>)}
+
+              {/* â”€â”€â”€ TAB: Running Notes â”€â”€â”€ */}
+              {inspectTab === 'notes' && (<>
+                {(!selectedInspectTrade.result || selectedInspectTrade.result === 'Pending') && (
+                  <div className="bg-gradient-to-r from-amber-500/5 to-orange-500/5 border border-amber-500/20 rounded-lg p-4">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <span className="h-2 w-2 rounded-full bg-amber-500 animate-pulse" />
+                        <span className="text-xs text-amber-400 font-semibold">Trade is LIVE</span>
+                      </div>
+                      <div className="flex items-center gap-4">
+                        <div><span className="text-[10px] text-slate-500 uppercase block">BTC</span><span className="text-sm font-bold font-mono text-slate-200">${marketSummary?.btcPrice?.toLocaleString() || 'â€”'}</span></div>
+                        <div><span className="text-[10px] text-slate-500 uppercase block">P&L</span><LivePnlValue value={getTradeUnrealizedPnL(selectedInspectTrade, liveTickers)} isHeaderCard={false} /></div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                <div>
+                  <h4 className="text-xs font-bold uppercase tracking-wider text-cyan-400 mb-3 flex items-center gap-1.5"><Clock size={14} /> Trade Notes Timeline</h4>
+                  {(selectedInspectTrade.running_notes?.length > 0) ? (
+                    <div className="space-y-2.5">
+                      {selectedInspectTrade.running_notes.map((note, idx) => (
+                        <div key={idx} className="flex gap-3 items-start">
+                          <div className="flex flex-col items-center shrink-0">
+                            <div className="h-2.5 w-2.5 rounded-full bg-cyan-500/60 border-2 border-cyan-500/30 mt-1" />
+                            {idx < selectedInspectTrade.running_notes.length - 1 && <div className="w-0.5 flex-1 bg-slate-800 mt-0.5" />}
+                          </div>
+                          <div className="flex-1 bg-[#121824]/50 border border-slate-900 rounded-lg p-3">
+                            <p className="text-[10px] text-slate-500 font-mono mb-1">{new Date(note.timestamp).toLocaleString()}</p>
+                            <p className="text-xs text-slate-300 leading-relaxed">{note.text}</p>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="text-center py-8 border border-dashed border-slate-800 rounded-lg">
+                      <PenLine size={24} className="mx-auto text-slate-700 mb-2" />
+                      <p className="text-xs text-slate-500">No notes logged yet for this trade.</p>
+                      <p className="text-[10px] text-slate-600 mt-1">Add notes below to track observations.</p>
+                    </div>
+                  )}
+                </div>
+
+                <div className="flex gap-2">
+                  <input type="text" placeholder="Write a note... (price hitting support, IV changing, adjusting stops)" value={runningNoteInput} onChange={(e) => setRunningNoteInput(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); handleAddRunningNote(selectedInspectTrade.id); } }}
+                    className="flex-1 bg-slate-950 border border-slate-800 rounded-lg px-3 py-2.5 text-xs focus:outline-none focus:border-cyan-500 text-slate-200 placeholder-slate-600" />
+                  <button onClick={() => handleAddRunningNote(selectedInspectTrade.id)} disabled={!runningNoteInput.trim()}
+                    className="bg-cyan-500 hover:bg-cyan-400 text-black px-4 rounded-lg flex items-center gap-1.5 text-xs font-semibold transition disabled:opacity-40 cursor-pointer">
+                    <Send size={12} /> Add
+                  </button>
+                </div>
+              </>)}
+
+              {/* â”€â”€â”€ TAB: Post-Trade Review â”€â”€â”€ */}
+              {inspectTab === 'review' && (<>
+                <div>
+                  <h4 className="text-xs font-bold uppercase tracking-wider text-purple-400 mb-3 flex items-center gap-1.5"><ArrowUpDown size={14} /> View Correctness Comparison</h4>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="bg-[#121824]/40 border border-slate-900 rounded-lg p-4">
+                      <p className="text-[10px] text-slate-500 uppercase font-semibold mb-2">Your View (Human)</p>
+                      <p className="text-xs text-slate-400 mb-3">Was your market analysis correct?</p>
+                      <div className="flex gap-2">
+                        <button onClick={() => handleUpdateViewCorrectness(selectedInspectTrade.id, 'userViewCorrect', true)}
+                          className={`flex-1 text-xs font-bold py-2 rounded border transition cursor-pointer ${selectedInspectTrade.post_trade_review?.userViewCorrect === true ? 'bg-emerald-500/20 border-emerald-500/50 text-emerald-400' : 'bg-slate-900 border-slate-800 text-slate-500 hover:border-emerald-500/30'}`}>âœ“ Correct</button>
+                        <button onClick={() => handleUpdateViewCorrectness(selectedInspectTrade.id, 'userViewCorrect', false)}
+                          className={`flex-1 text-xs font-bold py-2 rounded border transition cursor-pointer ${selectedInspectTrade.post_trade_review?.userViewCorrect === false ? 'bg-rose-500/20 border-rose-500/50 text-rose-400' : 'bg-slate-900 border-slate-800 text-slate-500 hover:border-rose-500/30'}`}>âœ• Incorrect</button>
+                      </div>
+                    </div>
+                    <div className="bg-[#121824]/40 border border-slate-900 rounded-lg p-4">
+                      <p className="text-[10px] text-slate-500 uppercase font-semibold mb-2">System View (AI)</p>
+                      <p className="text-xs text-slate-400 mb-3">Was the AI recommendation correct?</p>
+                      <div className="flex gap-2">
+                        <button onClick={() => handleUpdateViewCorrectness(selectedInspectTrade.id, 'aiViewCorrect', true)}
+                          className={`flex-1 text-xs font-bold py-2 rounded border transition cursor-pointer ${selectedInspectTrade.post_trade_review?.aiViewCorrect === true ? 'bg-emerald-500/20 border-emerald-500/50 text-emerald-400' : 'bg-slate-900 border-slate-800 text-slate-500 hover:border-emerald-500/30'}`}>âœ“ Correct</button>
+                        <button onClick={() => handleUpdateViewCorrectness(selectedInspectTrade.id, 'aiViewCorrect', false)}
+                          className={`flex-1 text-xs font-bold py-2 rounded border transition cursor-pointer ${selectedInspectTrade.post_trade_review?.aiViewCorrect === false ? 'bg-rose-500/20 border-rose-500/50 text-rose-400' : 'bg-slate-900 border-slate-800 text-slate-500 hover:border-rose-500/30'}`}>âœ• Incorrect</button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="bg-gradient-to-r from-slate-900/60 to-slate-800/20 border border-slate-800 rounded-lg p-4">
+                  <div className="grid grid-cols-3 gap-4 text-center">
+                    <div>
+                      <p className="text-[10px] text-slate-500 uppercase font-semibold">Max Risk</p>
+                      <p className="text-sm font-bold text-rose-400 font-mono mt-1">${typeof selectedInspectTrade.risk === 'number' ? selectedInspectTrade.risk.toFixed(2) : parseFloat(String(selectedInspectTrade.risk).replace(/[^0-9.-]/g, '') || '0').toFixed(2)}</p>
+                    </div>
+                    <div>
+                      <p className="text-[10px] text-slate-500 uppercase font-semibold">Max Reward</p>
+                      <p className="text-sm font-bold text-emerald-400 font-mono mt-1">${typeof selectedInspectTrade.reward === 'number' ? selectedInspectTrade.reward.toFixed(2) : parseFloat(String(selectedInspectTrade.reward).replace(/[^0-9.-]/g, '') || '0').toFixed(2)}</p>
+                    </div>
+                    <div>
+                      <p className="text-[10px] text-slate-500 uppercase font-semibold">Realized P&L</p>
+                      <p className={`text-sm font-bold font-mono mt-1 ${selectedInspectTrade.pnl > 0 ? 'text-emerald-400' : selectedInspectTrade.pnl < 0 ? 'text-rose-400' : 'text-amber-400'}`}>
+                        {selectedInspectTrade.pnl != null ? `${selectedInspectTrade.pnl >= 0 ? '+' : ''}$${selectedInspectTrade.pnl.toFixed(2)}` : 'Pending'}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                {selectedInspectTrade.reason && (
+                  <div className="bg-[#121824]/40 border border-slate-900 rounded-lg p-3">
+                    <p className="text-[10px] text-slate-500 uppercase font-semibold mb-1">AI Rationale</p>
+                    <p className="text-xs text-slate-300 leading-relaxed">{selectedInspectTrade.reason}</p>
+                  </div>
+                )}
+
+                {selectedInspectTrade.lessons && (
+                  <div className="bg-amber-500/5 border border-amber-500/20 rounded-lg p-3">
+                    <p className="text-[10px] text-amber-400 uppercase font-semibold mb-1">Lessons Learned</p>
+                    <p className="text-xs text-slate-300 leading-relaxed">{selectedInspectTrade.lessons}</p>
+                  </div>
+                )}
+
+                <div>
+                  <h4 className="text-xs font-bold uppercase tracking-wider text-purple-400 mb-3 flex items-center gap-1.5"><Brain size={14} /> AI Post-Mortem Analysis</h4>
+                  {selectedInspectTrade.post_trade_review?.aiPostMortem && !postTradeReview && (
+                    <div className="bg-purple-500/5 border border-purple-500/20 rounded-lg p-4 space-y-2">
+                      <div className="flex items-center justify-between">
+                        <p className="text-[10px] text-purple-400 font-semibold">Last AI Review</p>
+                        <p className="text-[10px] text-slate-500 font-mono">{selectedInspectTrade.post_trade_review.aiReviewDate ? new Date(selectedInspectTrade.post_trade_review.aiReviewDate).toLocaleString() : ''}</p>
+                      </div>
+                      <div className="text-xs text-slate-300 leading-relaxed space-y-1">{renderMarkdown(selectedInspectTrade.post_trade_review.aiPostMortem)}</div>
+                    </div>
+                  )}
+                  {postTradeReview && (
+                    <div className="bg-purple-500/5 border border-purple-500/20 rounded-lg p-4 space-y-2 mt-3">
+                      <p className="text-[10px] text-purple-400 font-semibold">ðŸ¤– Fresh AI Analysis</p>
+                      <div className="text-xs text-slate-300 leading-relaxed space-y-1">{renderMarkdown(postTradeReview)}</div>
+                    </div>
+                  )}
+                  <button onClick={() => handleGeneratePostMortem(selectedInspectTrade)} disabled={generatingReview}
+                    className="mt-3 w-full flex items-center justify-center gap-2 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white py-2.5 font-bold text-xs rounded-lg transition disabled:opacity-50 cursor-pointer">
+                    {generatingReview ? (<><RotateCw size={14} className="animate-spin" /> Generating AI Post-Mortem Review...</>) : (<><Brain size={14} /> {selectedInspectTrade.post_trade_review?.aiPostMortem ? 'Regenerate AI Post-Mortem' : 'Generate AI Post-Mortem Review'}</>)}
+                  </button>
+                </div>
+              </>)}
             </div>
             
             <div className="px-6 py-4 border-t border-slate-900 bg-slate-950/20 text-right">
-              <button 
-                onClick={() => setSelectedInspectTrade(null)} 
-                className="bg-[#1C253B] hover:bg-slate-800 hover:text-white text-slate-200 px-4 py-1.5 font-semibold text-xs rounded transition cursor-pointer"
-              >
-                Close View
-              </button>
+              <button onClick={() => { setSelectedInspectTrade(null); setPostTradeReview(null); setInspectTab('overview'); }} 
+                className="bg-[#1C253B] hover:bg-slate-800 hover:text-white text-slate-200 px-4 py-1.5 font-semibold text-xs rounded transition cursor-pointer">Close View</button>
             </div>
           </div>
         </div>
@@ -1736,3 +2181,4 @@ export default function Dashboard() {
     </main>
   );
 }
+

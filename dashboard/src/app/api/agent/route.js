@@ -10,7 +10,8 @@ import {
   getOptionChain,
   calculateStrategy,
   validateTrade,
-  getChartTechnicalAnalysis
+  getChartTechnicalAnalysis,
+  autoCloseExpiredTrades
 } from '../../../../../index.js';
 
 const apiKey = process.env.OPENAI_API_KEY || '';
@@ -123,6 +124,7 @@ async function readTradeJournal() {
         risk: `$${Number(item.risk).toFixed(2)}`,
         reward: `$${Number(item.reward).toFixed(2)}`,
         result: item.result,
+        marketView: item.market_view || null,
         lessons: item.lessons || '',
         legs: item.legs || [],
         entryFactors: item.entry_factors || null,
@@ -171,6 +173,7 @@ async function logTradeToSupabase(trade) {
         reward: rewardVal,
         result: trade.result,
         pnl: pnlVal,
+        market_view: trade.market_view || trade.marketView || null,
         lessons: trade.lessons,
         legs: trade.legs || [],
         entry_factors: trade.entryFactors || null
@@ -212,10 +215,15 @@ Rules for recommendation:
 - Chart S/R & Trend Alignment: Prioritize using structural 4H chart support and resistance levels (retrieved from getChartTechnicalAnalysis) to select your option strikes (e.g. place short put strike below 4H support, short call strike above 4H resistance). Explain how these chart-based levels align with or differ from option chain OI walls, and how the 4H trend bias confirms your strategy.
 - Why Not? Section: For every recommendation, you must include a detailed "Why Not?" section explaining why you rejected the other options in the 'candidateStrategies' list (and compare it to common alternatives like an Iron Condor or other spreads).
 - Confidence Score: Evaluate and explain your trade confidence based on the 'confidenceInputs' (the count of signalsAligned and signalsConflicting) returned by getMarketSummary(). Justify the final confidence (High, Medium, or Low) using these signals. Do not invent arbitrary percentages.
-- Payout P&L Limits: Calculate strategy lot sizes relative to the users Capital and Risk Tolerance stored in their profile. If Capital is $500 and Risk Tolerance is 2%, the max risk for the recommended trade must not exceed $10 (Capital * Risk). Explain this lot size math in your recommendation.
+- Payout P&L Limits: Calculate strategy lot sizes relative to the users Capital and Risk Tolerance stored in their profile. Note that on Delta Exchange, 1 Lot = 0.001 BTC (so Risk per Lot = Max Risk per 1 BTC * 0.001). Explain this lot size math clearly in your recommendation.
+- Delta Exchange India Brokerage & Taxes: Always factor in Delta Exchange India brokerage fees and taxes into your trade recommendations:
+  * Taker Fee: 0.03% of Notional Value per leg (capped at 10% of Option Premium per leg).
+  * GST: 18% GST on total brokerage fees.
+  * TDS: 1% VDA TDS on gross transaction value (where applicable).
+  * Round-Trip Cost: Always report entry brokerage, GST, and round-trip brokerage (entry + exit), along with Net Max Risk and Net Max Reward after brokerage.
 - HISTORY-BASED LEARNING: Before suggesting any options trade, you MUST retrieve past trades via 'getTradeJournal()'. Analyze the 'entryFactors' of closed trades (those with "Profit" or "Loss" results). Identify which factor combinations (e.g. low/high IV, specific Greeks, alignment metrics, PCR levels) historically resulted in profitable outcomes versus losses. Mention this performance insight inside your trade recommendation (e.g., "Historically, setups under similar IV and PCR conditions resulted in [X]% win rate...").
 - LOGGING ENTRY FACTORS: When you log a trade via 'logTrade()', you MUST populate the 'entryFactors' parameter using the exact market summary metrics (prices, S/R, PCR, IV, signals, Greeks, and validateTrade subscores) present at entry. This allows the system to build the historical training dataset for you to learn from in subsequent turns.
-- Output Format: Present your response in a clear, formatted layout with sections: Market Bias, Reason, Recommended Strategy, Opportunity Score, Suggested Strikes, Maximum Risk, Maximum Reward, Lot Size Sizing, Confidence (explaining Aligned vs Conflicting signals), Why not [alternative strategy candidates]?, Historical Learnings (analyzing closed trades factors).`;
+- Output Format: Present your response in a clear, formatted layout with sections: Market Bias, Reason, Recommended Strategy, Opportunity Score, Suggested Strikes, Maximum Risk, Maximum Reward, Delta Brokerage & GST Breakdown, Net Max Risk & Net Max Reward, Lot Size Sizing, Confidence (explaining Aligned vs Conflicting signals), Why not [alternative strategy candidates]?, Historical Learnings (analyzing closed trades factors).`;
 
 function getSystemPrompt(profile) {
   let profileSection = '\n\n=== USER PROFILE (MEMORY) ===\n';
@@ -226,6 +234,8 @@ function getSystemPrompt(profile) {
     if (profile.riskTolerance) profileSection += `- Risk Tolerance: ${(profile.riskTolerance * 100).toFixed(1)}% per trade\n`;
     if (profile.minRR) profileSection += `- Minimum Risk/Reward (minRR): ${profile.minRR.toFixed(2)}\n`;
     if (profile.preferredExpiry) profileSection += `- Preferred Expiry: ${profile.preferredExpiry}\n`;
+    if (profile.lotSizeBtc) profileSection += `- Contract Sizing: 1 Lot = ${profile.lotSizeBtc} BTC\n`;
+    if (profile.exchange) profileSection += `- Brokerage Exchange: ${profile.exchange} (0.03% Taker, 10% Premium Cap, 18% GST, 1% VDA TDS)\n`;
     if (profile.preferredStrategies && profile.preferredStrategies.length > 0) {
       profileSection += `- Preferred Strategies: ${profile.preferredStrategies.join(', ')}\n`;
     }
@@ -375,6 +385,18 @@ const tools = [
             },
             description: 'Structured array of option legs for real-time P&L tracking.'
           },
+          marketView: {
+            type: 'object',
+            properties: {
+              trendDirection4H: { type: 'string', enum: ['Up', 'Side Base', 'Down'], description: 'Market trend based on 4-hour chart analysis.' },
+              swingForecast: { type: 'string', enum: ['Swing Up', 'Swing Low', 'Stay Between Price'], description: 'Expected 24-48 hour price movement.' },
+              supportLevel: { type: 'number', description: 'Key support level from chart analysis.' },
+              resistanceLevel: { type: 'number', description: 'Key resistance level from chart analysis.' },
+              entryPrice: { type: 'number', description: 'Spot/option entry price.' },
+              traderRationale: { type: 'string', description: 'Human trader\'s reasoning and view for taking this trade.' }
+            },
+            description: 'Pre-trade market view with 4H trend, 24-48H swing forecast, key levels, and trader rationale.'
+          },
           entryFactors: {
             type: 'object',
             properties: {
@@ -461,6 +483,26 @@ const tools = [
           limit: {
             type: 'number',
             description: 'Number of historical candles to analyze. Defaults to 150.'
+          }
+        }
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'autoCloseExpiredTrades',
+      description: 'Automatically close open/pending trades in the journal at option expiry date using the final BTC settlement price.',
+      parameters: {
+        type: 'object',
+        properties: {
+          btcSettlementPrice: {
+            type: 'number',
+            description: 'Optional final BTC settlement price. If omitted, current BTC spot price is used as settlement price.'
+          },
+          targetTradeId: {
+            type: 'string',
+            description: 'Optional specific trade ID to settle. If omitted, all pending open trades are evaluated and settled.'
           }
         }
       }
@@ -558,7 +600,8 @@ const availableFunctions = {
       lessons: args.lessons || '',
       legs: args.legs || [],
       entryFactors: entryFactors || null,
-      entry_factors: entryFactors || null
+      entry_factors: entryFactors || null,
+      market_view: args.marketView || null
     };
     if (supabase) {
       return await logTradeToSupabase(newTrade);
@@ -583,6 +626,12 @@ const availableFunctions = {
       symbol: args.symbol,
       resolution: args.resolution,
       limit: args.limit
+    });
+  },
+  autoCloseExpiredTrades: async (args) => {
+    return await autoCloseExpiredTrades({
+      btcSettlementPrice: args.btcSettlementPrice,
+      targetTradeId: args.targetTradeId
     });
   }
 };
