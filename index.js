@@ -834,8 +834,53 @@ export async function getOptionChain({ expiry = null, fromStrike = null, toStrik
 }
 
 /**
+ * Helper: Calculate Delta Exchange India Options Brokerage & Taxes.
+ * - Taker Fee: 0.03% of Notional (BTC Spot Price * Quantity)
+ * - Fee Cap: 10% of Option Premium
+ * - GST: 18% on trading fee
+ * - TDS: 1% VDA TDS on gross transaction values
+ */
+export function calculateDeltaBrokerage({ btcPrice, legPremiums, lotCount = 1, lotSizeBtc = 0.001 }) {
+  const quantityBtc = lotCount * lotSizeBtc;
+  let totalBaseFee = 0;
+  const legBreakdown = [];
+
+  for (const leg of legPremiums) {
+    const premium = Math.max(0, leg.premium || 0);
+    const rawFee = 0.0003 * btcPrice * quantityBtc;
+    const feeCap = 0.10 * premium * quantityBtc;
+    const baseFee = Math.min(rawFee, feeCap);
+    
+    totalBaseFee += baseFee;
+    legBreakdown.push({
+      type: leg.type || 'Option Leg',
+      strike: leg.strike,
+      premium,
+      rawFee: parseFloat(rawFee.toFixed(4)),
+      feeCap: parseFloat(feeCap.toFixed(4)),
+      finalBaseFee: parseFloat(baseFee.toFixed(4))
+    });
+  }
+
+  const gst = totalBaseFee * 0.18;
+  const entryBrokerage = totalBaseFee + gst;
+  const roundTripBrokerage = entryBrokerage * 2;
+
+  return {
+    lotCount,
+    lotSizeBtc,
+    quantityBtc,
+    totalBaseFee: parseFloat(totalBaseFee.toFixed(4)),
+    gst: parseFloat(gst.toFixed(4)),
+    entryBrokerage: parseFloat(entryBrokerage.toFixed(4)),
+    roundTripBrokerage: parseFloat(roundTripBrokerage.toFixed(4)),
+    legBreakdown
+  };
+}
+
+/**
  * TOOL 5: Calculate Strategy.
- * Calculates net debit/credit, max risk, and max reward for a spreads strategy.
+ * Calculates net debit/credit, max risk, max reward, and Delta Exchange India brokerage for a spreads strategy.
  */
 export async function calculateStrategy({ strategy, expiry = null, shortStrike, longStrike, shortStrike2 = null, longStrike2 = null }) {
   const data = await fetchAndProcessOptions(expiry);
@@ -852,6 +897,7 @@ export async function calculateStrategy({ strategy, expiry = null, shortStrike, 
   let maxRisk = 0;
   let maxReward = 0;
   let details = {};
+  const legPremiums = [];
 
   const strat = strategy.toLowerCase().replace(/[^a-z0-9]/g, '');
 
@@ -870,6 +916,9 @@ export async function calculateStrategy({ strategy, expiry = null, shortStrike, 
     maxReward = netCredit;
     maxRisk = (shortStrike - longStrike) - netCredit;
     
+    legPremiums.push({ type: 'Short Put', strike: shortStrike, premium: shortBid });
+    legPremiums.push({ type: 'Long Put', strike: longStrike, premium: longAsk });
+
     details = {
       shortPut: { strike: shortStrike, bid: shortBid },
       longPut: { strike: longStrike, ask: longAsk },
@@ -891,6 +940,9 @@ export async function calculateStrategy({ strategy, expiry = null, shortStrike, 
     maxReward = netCredit;
     maxRisk = (longStrike - shortStrike) - netCredit;
     
+    legPremiums.push({ type: 'Short Call', strike: shortStrike, premium: shortBid });
+    legPremiums.push({ type: 'Long Call', strike: longStrike, premium: longAsk });
+
     details = {
       shortCall: { strike: shortStrike, bid: shortBid },
       longCall: { strike: longStrike, ask: longAsk },
@@ -912,6 +964,9 @@ export async function calculateStrategy({ strategy, expiry = null, shortStrike, 
     maxRisk = netDebit;
     maxReward = (shortStrike - longStrike) - netDebit;
     
+    legPremiums.push({ type: 'Long Call', strike: longStrike, premium: longAsk });
+    legPremiums.push({ type: 'Short Call', strike: shortStrike, premium: shortBid });
+
     details = {
       longCall: { strike: longStrike, ask: longAsk },
       shortCall: { strike: shortStrike, bid: shortBid },
@@ -933,6 +988,9 @@ export async function calculateStrategy({ strategy, expiry = null, shortStrike, 
     maxRisk = netDebit;
     maxReward = (longStrike - shortStrike) - netDebit;
     
+    legPremiums.push({ type: 'Long Put', strike: longStrike, premium: longAsk });
+    legPremiums.push({ type: 'Short Put', strike: shortStrike, premium: shortBid });
+
     details = {
       longPut: { strike: longStrike, ask: longAsk },
       shortPut: { strike: shortStrike, bid: shortBid },
@@ -961,6 +1019,11 @@ export async function calculateStrategy({ strategy, expiry = null, shortStrike, 
     const callSpreadWidth = longStrike2 - shortStrike2;
     maxRisk = Math.max(putSpreadWidth, callSpreadWidth) - netCredit;
     
+    legPremiums.push({ type: 'Short Put', strike: shortStrike, premium: spBid });
+    legPremiums.push({ type: 'Long Put', strike: longStrike, premium: lpAsk });
+    legPremiums.push({ type: 'Short Call', strike: shortStrike2, premium: scBid });
+    legPremiums.push({ type: 'Long Call', strike: longStrike2, premium: lcAsk });
+
     details = {
       putSpread: { shortPut: shortStrike, longPut: longStrike, shortBid: spBid, longAsk: lpAsk },
       callSpread: { shortCall: shortStrike2, longCall: longStrike2, shortBid: scBid, longAsk: lcAsk },
@@ -972,10 +1035,45 @@ export async function calculateStrategy({ strategy, expiry = null, shortStrike, 
     throw new Error(`Strategy '${strategy}' calculations are not supported yet.`);
   }
 
+  const btcPrice = data.btcPrice || 67000;
+  const brokeragePerBtc = calculateDeltaBrokerage({ btcPrice, legPremiums, lotCount: 1000, lotSizeBtc: 0.001 });
+  const brokeragePerLot = calculateDeltaBrokerage({ btcPrice, legPremiums, lotCount: 1, lotSizeBtc: 0.001 });
+
+  const roundTripBrokeragePerBtc = brokeragePerBtc.roundTripBrokerage;
+  const roundTripBrokeragePerLot = brokeragePerLot.roundTripBrokerage;
+
+  const netMaxRewardPerBtc = maxReward - roundTripBrokeragePerBtc;
+  const netMaxRiskPerBtc = maxRisk + roundTripBrokeragePerBtc;
+
+  const netMaxRewardPerLot = (maxReward * 0.001) - roundTripBrokeragePerLot;
+  const netMaxRiskPerLot = (maxRisk * 0.001) + roundTripBrokeragePerLot;
+
   return {
     strategy,
     maxRisk: parseFloat(maxRisk.toFixed(2)),
     maxReward: parseFloat(maxReward.toFixed(2)),
+    netMaxRiskPerBtc: parseFloat(netMaxRiskPerBtc.toFixed(2)),
+    netMaxRewardPerBtc: parseFloat(netMaxRewardPerBtc.toFixed(2)),
+    perLot: {
+      lotSizeBtc: 0.001,
+      maxRiskPerLot: parseFloat((maxRisk * 0.001).toFixed(4)),
+      maxRewardPerLot: parseFloat((maxReward * 0.001).toFixed(4)),
+      entryBrokeragePerLot: brokeragePerLot.entryBrokerage,
+      roundTripBrokeragePerLot: brokeragePerLot.roundTripBrokerage,
+      netMaxRiskPerLot: parseFloat(netMaxRiskPerLot.toFixed(4)),
+      netMaxRewardPerLot: parseFloat(netMaxRewardPerLot.toFixed(4))
+    },
+    brokerage: {
+      exchange: "Delta Exchange India",
+      takerFeeRate: "0.03%",
+      feeCapRate: "10% of Option Premium",
+      gstRate: "18%",
+      tdsRate: "1% VDA TDS",
+      entryBrokeragePerBtc: brokeragePerBtc.entryBrokerage,
+      gstEntryPerBtc: brokeragePerBtc.gst,
+      roundTripBrokeragePerBtc: brokeragePerBtc.roundTripBrokerage,
+      legBreakdown: brokeragePerLot.legBreakdown
+    },
     details
   };
 }
@@ -1358,6 +1456,171 @@ export async function getChartTechnicalAnalysis({ symbol = 'BTCUSD', resolution 
       error: error.message
     };
   }
+}
+
+/**
+ * TOOL 7: Calculate Expiry P&L.
+ * Calculates exact final P&L at expiry based on BTC Settlement Price and Delta Exchange India fees.
+ */
+export function calculateExpiryPnL({ strategy, legs = [], netCredit = 0, netDebit = 0, settlementPrice, lotCount = 1, lotSizeBtc = 0.001 }) {
+  const quantityBtc = lotCount * lotSizeBtc;
+
+  let grossLegPayoffPerBtc = 0;
+  const legPayoffs = [];
+
+  for (const leg of legs) {
+    const type = (leg.type || leg.action || '').toLowerCase();
+    const strike = Number(leg.strike);
+    let legPayoff = 0;
+
+    if (type.includes('short put') || (type.includes('put') && (type.includes('short') || type.includes('sell')))) {
+      const itmAmount = Math.max(0, strike - settlementPrice);
+      legPayoff = -itmAmount;
+    } else if (type.includes('long put') || (type.includes('put') && (type.includes('long') || type.includes('buy')))) {
+      const itmAmount = Math.max(0, strike - settlementPrice);
+      legPayoff = itmAmount;
+    } else if (type.includes('short call') || (type.includes('call') && (type.includes('short') || type.includes('sell')))) {
+      const itmAmount = Math.max(0, settlementPrice - strike);
+      legPayoff = -itmAmount;
+    } else if (type.includes('long call') || (type.includes('call') && (type.includes('long') || type.includes('buy')))) {
+      const itmAmount = Math.max(0, settlementPrice - strike);
+      legPayoff = itmAmount;
+    }
+
+    grossLegPayoffPerBtc += legPayoff;
+    legPayoffs.push({
+      type: leg.type || type,
+      strike,
+      premium: leg.premium || 0,
+      settlementPrice,
+      payoffPerBtc: parseFloat(legPayoff.toFixed(2))
+    });
+  }
+
+  const initialNetPremiumPerBtc = netCredit ? netCredit : -netDebit;
+  const grossPnlPerBtc = initialNetPremiumPerBtc + grossLegPayoffPerBtc;
+
+  // Calculate Delta Exchange India Entry Brokerage + Expiry Settlement Fee
+  const legPremiums = legs.map(l => ({ type: l.type, strike: l.strike, premium: l.premium || 0 }));
+  const entryBrokerageInfo = calculateDeltaBrokerage({ btcPrice: settlementPrice, legPremiums, lotCount, lotSizeBtc });
+  
+  // Expiry Settlement Fee: 0.015% of settlement price for ITM contracts
+  const exitBaseFee = 0.00015 * settlementPrice * quantityBtc;
+  const exitGst = exitBaseFee * 0.18;
+  const exitSettlementFee = exitBaseFee + exitGst;
+
+  const totalBrokerage = entryBrokerageInfo.entryBrokerage + exitSettlementFee;
+  const grossPnlTotal = grossPnlPerBtc * quantityBtc;
+  const netPnlTotal = grossPnlTotal - totalBrokerage;
+
+  const isProfit = netPnlTotal >= 0;
+  const resultString = isProfit
+    ? `Profit +$${netPnlTotal.toFixed(2)}`
+    : `Loss -$${Math.abs(netPnlTotal).toFixed(2)}`;
+
+  return {
+    strategy,
+    settlementPrice,
+    lotCount,
+    quantityBtc,
+    initialNetPremiumPerBtc: parseFloat(initialNetPremiumPerBtc.toFixed(2)),
+    grossLegPayoffPerBtc: parseFloat(grossLegPayoffPerBtc.toFixed(2)),
+    grossPnlPerBtc: parseFloat(grossPnlPerBtc.toFixed(2)),
+    grossPnlTotal: parseFloat(grossPnlTotal.toFixed(2)),
+    totalBrokerage: parseFloat(totalBrokerage.toFixed(2)),
+    netPnlTotal: parseFloat(netPnlTotal.toFixed(2)),
+    isProfit,
+    resultString,
+    legPayoffs
+  };
+}
+
+/**
+ * TOOL 8: Auto Close Expired Trades.
+ * Automatically closes open trades at expiry using the current/provided BTC settlement price.
+ */
+export async function autoCloseExpiredTrades({ btcSettlementPrice = null, targetTradeId = null } = {}) {
+  const JOURNAL_PATH = 'trade_journal.json';
+  let trades = [];
+
+  try {
+    if (fs.existsSync(JOURNAL_PATH)) {
+      trades = JSON.parse(fs.readFileSync(JOURNAL_PATH, 'utf8'));
+    }
+  } catch (err) {
+    console.error('Failed to read trade journal for auto-close:', err.message);
+  }
+
+  if (!btcSettlementPrice) {
+    try {
+      const priceData = await getCurrentBTCPrice();
+      btcSettlementPrice = typeof priceData === 'object' ? priceData.price : priceData;
+    } catch (err) {
+      btcSettlementPrice = 67000;
+    }
+  }
+
+  const closedTrades = [];
+  const updatedTrades = trades.map(trade => {
+    const isPending = !trade.result || trade.result === 'Pending' || trade.status === 'OPEN';
+    const isTarget = targetTradeId ? trade.id === targetTradeId : isPending;
+
+    if (isTarget) {
+      const legs = trade.legs || [];
+      const parseVal = (v) => typeof v === 'number' ? v : parseFloat(String(v || '0').replace(/[^0-9.-]/g, '')) || 0;
+      const netCredit = trade.netCredit || parseVal(trade.reward);
+      const netDebit = trade.netDebit || 0;
+      const lotCount = trade.lotCount || (trade.lots ? Number(trade.lots) : 1);
+
+      const pnlInfo = calculateExpiryPnL({
+        strategy: trade.strategy || 'Bull Put Spread',
+        legs,
+        netCredit,
+        netDebit,
+        settlementPrice: btcSettlementPrice,
+        lotCount,
+        lotSizeBtc: 0.001
+      });
+
+      const updatedTrade = {
+        ...trade,
+        result: pnlInfo.resultString,
+        pnl: pnlInfo.netPnlTotal,
+        status: 'CLOSED',
+        settlementPrice: btcSettlementPrice,
+        closedAt: new Date().toISOString(),
+        lessons: (trade.lessons ? trade.lessons + ' | ' : '') + `Auto-closed at expiry @ $${btcSettlementPrice.toLocaleString()} (Net PnL: $${pnlInfo.netPnlTotal.toFixed(2)})`
+      };
+
+      closedTrades.push({
+        id: trade.id || trade.date,
+        strategy: trade.strategy,
+        settlementPrice: btcSettlementPrice,
+        result: pnlInfo.resultString,
+        netPnlTotal: pnlInfo.netPnlTotal,
+        totalBrokerage: pnlInfo.totalBrokerage
+      });
+
+      return updatedTrade;
+    }
+    return trade;
+  });
+
+  if (closedTrades.length > 0) {
+    try {
+      fs.writeFileSync(JOURNAL_PATH, JSON.stringify(updatedTrades, null, 2), 'utf8');
+    } catch (err) {
+      console.error('Failed to save auto-closed trades:', err.message);
+    }
+  }
+
+  return {
+    success: true,
+    closedCount: closedTrades.length,
+    btcSettlementPrice,
+    closedTrades
+  };
+>>>>>>> 79ce1c6 (added simple journals 1)
 }
 
 /**

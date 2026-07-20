@@ -1,5 +1,13 @@
 {
   "capital": 50000,
   "riskTolerance": 0.02,
-  "minRR": 0.15
+  "minRR": 0.15,
+  "lotSizeBtc": 0.001,
+  "exchange": "Delta Exchange India",
+  "takerFeeRate": 0.0003,
+  "feeCapRate": 0.10,
+  "gstRate": 0.18,
+  "tdsRate": 0.01,
+  "notes": "1 Lot = 0.001 BTC. Brokerage: 0.03% notional (capped at 10% premium) + 18% GST + 1% VDA TDS (Delta Exchange India)"
 }
+
