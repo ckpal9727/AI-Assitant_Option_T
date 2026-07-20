@@ -1620,7 +1620,6 @@ export async function autoCloseExpiredTrades({ btcSettlementPrice = null, target
     btcSettlementPrice,
     closedTrades
   };
->>>>>>> 79ce1c6 (added simple journals 1)
 }
 
 /**
