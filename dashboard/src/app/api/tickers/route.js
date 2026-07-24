@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { checkAndTriggerAlerts } from '../../../../../telegram.js';
+import { checkAndTriggerAlerts } from '@/lib/telegram.js';
 
 export async function GET() {
   try {

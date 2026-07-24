@@ -5,15 +5,15 @@ import {
   clearAlerts, 
   sendTelegramMessage, 
   sendPriceAlertNotification 
-} from '../../../../../telegram.js';
+} from '@/lib/telegram.js';
 import { 
   loadExecutionLogs, 
   clearExecutionLogs 
-} from '../../../../../autoTrader.js';
+} from '@/lib/autoTrader.js';
 import fs from 'fs';
 import path from 'path';
 
-const ALERTS_FILE = path.join(process.cwd(), '..', 'telegram_alerts.json');
+const ALERTS_FILE = path.join(process.cwd(), 'telegram_alerts.json');
 const ENV_LOCAL_PATH = path.join(process.cwd(), '.env.local');
 const ROOT_ENV_PATH = path.join(process.cwd(), '..', '.env');
 
@@ -144,7 +144,7 @@ export async function POST(request) {
         const btcData = await resBtc.json();
         if (btcData.result && btcData.result.spot_price) {
           const currentPrice = parseFloat(btcData.result.spot_price);
-          const { checkAndTriggerAlerts } = await import('../../../../../telegram.js');
+          const { checkAndTriggerAlerts } = await import('@/lib/telegram.js');
           await checkAndTriggerAlerts(currentPrice);
         }
       }

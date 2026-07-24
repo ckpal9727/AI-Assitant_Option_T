@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { getMarketSummary } from '../../../../../index.js';
-import { checkAndTriggerAlerts } from '../../../../../telegram.js';
+import { checkAndTriggerAlerts } from '@/lib/telegram.js';
 
 export async function GET(request) {
   try {
