@@ -1,14 +1,27 @@
 import { NextResponse } from 'next/server';
+import { checkAndTriggerAlerts } from '../../../../../telegram.js';
 
 export async function GET() {
   try {
-    const res = await fetch('https://api.india.delta.exchange/v2/tickers?contract_types=call_options,put_options&underlying_asset_symbols=BTC');
-    if (!res.ok) {
-      throw new Error(`Failed to fetch tickers from Delta Exchange: ${res.statusText}`);
+    const [resTickers, resBtc] = await Promise.all([
+      fetch('https://api.india.delta.exchange/v2/tickers?contract_types=call_options,put_options&underlying_asset_symbols=BTC'),
+      fetch('https://api.india.delta.exchange/v2/tickers/BTCUSD')
+    ]);
+
+    if (!resTickers.ok) {
+      throw new Error(`Failed to fetch tickers from Delta Exchange: ${resTickers.statusText}`);
     }
-    const data = await res.json();
+    const data = await resTickers.json();
     if (!data.result) {
       throw new Error('Delta Exchange tickers result is empty');
+    }
+
+    let btcSpotPrice = null;
+    if (resBtc.ok) {
+      const btcData = await resBtc.json();
+      if (btcData.result && btcData.result.spot_price) {
+        btcSpotPrice = parseFloat(btcData.result.spot_price);
+      }
     }
 
     const tickersMap = {};
@@ -22,7 +35,20 @@ export async function GET() {
       };
     }
 
-    return NextResponse.json({ success: true, tickers: tickersMap });
+    let hasNewAutoTrade = false;
+    // Evaluate active Telegram price alerts every 2 seconds with live BTC spot price
+    if (btcSpotPrice) {
+      try {
+        const triggerResult = await checkAndTriggerAlerts(btcSpotPrice);
+        if (triggerResult && triggerResult.triggered) {
+          hasNewAutoTrade = true;
+        }
+      } catch (err) {
+        console.error('Ticker alert trigger check error:', err.message);
+      }
+    }
+
+    return NextResponse.json({ success: true, tickers: tickersMap, btcSpotPrice, hasNewAutoTrade });
   } catch (error) {
     console.error('API Tickers Error:', error);
     return NextResponse.json({ success: false, error: error.message }, { status: 500 });

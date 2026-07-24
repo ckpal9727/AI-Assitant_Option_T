@@ -1,0 +1,216 @@
+[
+  {
+    "id": "exec_1784898651623",
+    "timestamp": "2026-07-24T13:10:51.326Z",
+    "eventSummary": "System Error: Invalid strikes for Bull Put Spread: 64400 or 63400 not found.",
+    "systemStatus": "FAILURE",
+    "preApproved": true,
+    "triggerEvent": {
+      "targetPrice": 64460,
+      "direction": "above",
+      "spotPrice": 64460.7
+    },
+    "autoTradeExecution": {
+      "status": "FAILED",
+      "strategy": "Bull Put Credit Spread",
+      "shortStrike": 64400,
+      "longStrike": 63400,
+      "failureReason": "Invalid strikes for Bull Put Spread: 64400 or 63400 not found."
+    },
+    "journalStatus": {
+      "logged": false,
+      "tradeId": null
+    },
+    "postTriggerAIAnalysis": {
+      "executed": false,
+      "summary": null,
+      "error": "Invalid strikes for Bull Put Spread: 64400 or 63400 not found."
+    },
+    "systemError": "Invalid strikes for Bull Put Spread: 64400 or 63400 not found.",
+    "chatId": "1294526425"
+  },
+  {
+    "id": "exec_1784898647568",
+    "timestamp": "2026-07-24T13:10:47.313Z",
+    "eventSummary": "System Error: Invalid strikes for Bull Put Spread: 64400 or 63400 not found.",
+    "systemStatus": "FAILURE",
+    "preApproved": true,
+    "triggerEvent": {
+      "targetPrice": 64440,
+      "direction": "above",
+      "spotPrice": 64456.1
+    },
+    "autoTradeExecution": {
+      "status": "FAILED",
+      "strategy": "Bull Put Credit Spread",
+      "shortStrike": 64400,
+      "longStrike": 63400,
+      "failureReason": "Invalid strikes for Bull Put Spread: 64400 or 63400 not found."
+    },
+    "journalStatus": {
+      "logged": false,
+      "tradeId": null
+    },
+    "postTriggerAIAnalysis": {
+      "executed": false,
+      "summary": null,
+      "error": "Invalid strikes for Bull Put Spread: 64400 or 63400 not found."
+    },
+    "systemError": "Invalid strikes for Bull Put Spread: 64400 or 63400 not found.",
+    "chatId": "1294526425"
+  },
+  {
+    "id": "exec_1784898583654",
+    "timestamp": "2026-07-24T13:09:43.164Z",
+    "eventSummary": "System Error: Invalid strikes for Bull Put Spread: 64400 or 63400 not found.",
+    "systemStatus": "FAILURE",
+    "preApproved": true,
+    "triggerEvent": {
+      "targetPrice": 64400,
+      "direction": "above",
+      "spotPrice": 64423.9
+    },
+    "autoTradeExecution": {
+      "status": "FAILED",
+      "strategy": "Bull Put Credit Spread",
+      "shortStrike": 64400,
+      "longStrike": 63400,
+      "failureReason": "Invalid strikes for Bull Put Spread: 64400 or 63400 not found."
+    },
+    "journalStatus": {
+      "logged": false,
+      "tradeId": null
+    },
+    "postTriggerAIAnalysis": {
+      "executed": false,
+      "summary": null,
+      "error": "Invalid strikes for Bull Put Spread: 64400 or 63400 not found."
+    },
+    "systemError": "Invalid strikes for Bull Put Spread: 64400 or 63400 not found.",
+    "chatId": "1294526425"
+  },
+  {
+    "id": "exec_1784898355755",
+    "timestamp": "2026-07-24T13:05:54.028Z",
+    "eventSummary": "Everything Gone Well",
+    "systemStatus": "SUCCESS",
+    "preApproved": true,
+    "triggerEvent": {
+      "targetPrice": 64500,
+      "direction": "below",
+      "spotPrice": 64500
+    },
+    "autoTradeExecution": {
+      "status": "SUCCESS",
+      "strategy": "Bear Call Credit Spread",
+      "shortStrike": 64400,
+      "longStrike": 65400,
+      "risk": 100,
+      "reward": 25
+    },
+    "journalStatus": {
+      "logged": true,
+      "tradeId": 440100
+    },
+    "postTriggerAIAnalysis": {
+      "executed": false,
+      "summary": null,
+      "error": "401 Incorrect API key provided: sk-proj-********************************************************************************************************************************************************7tUA. You can find your API key at https://platform.openai.com/account/api-keys."
+    },
+    "systemError": null,
+    "chatId": "1294526425"
+  },
+  {
+    "id": "exec_1784898353292",
+    "timestamp": "2026-07-24T13:05:51.979Z",
+    "eventSummary": "Everything Gone Well",
+    "systemStatus": "SUCCESS",
+    "preApproved": true,
+    "triggerEvent": {
+      "targetPrice": 64500,
+      "direction": "below",
+      "spotPrice": 64500
+    },
+    "autoTradeExecution": {
+      "status": "SUCCESS",
+      "strategy": "Bear Call Credit Spread",
+      "shortStrike": 64400,
+      "longStrike": 65400,
+      "risk": 100,
+      "reward": 25
+    },
+    "journalStatus": {
+      "logged": true,
+      "tradeId": 207919
+    },
+    "postTriggerAIAnalysis": {
+      "executed": false,
+      "summary": null,
+      "error": "401 Incorrect API key provided: sk-proj-********************************************************************************************************************************************************7tUA. You can find your API key at https://platform.openai.com/account/api-keys."
+    },
+    "systemError": null,
+    "chatId": "1294526425"
+  },
+  {
+    "id": "exec_1784897981568",
+    "timestamp": "2026-07-24T12:59:39.194Z",
+    "eventSummary": "Everything Gone Well",
+    "systemStatus": "SUCCESS",
+    "preApproved": true,
+    "triggerEvent": {
+      "targetPrice": 64900,
+      "direction": "below",
+      "spotPrice": 64773.3
+    },
+    "autoTradeExecution": {
+      "status": "SUCCESS",
+      "strategy": "Bear Call Credit Spread",
+      "shortStrike": 64800,
+      "longStrike": 65800,
+      "risk": 100,
+      "reward": 25
+    },
+    "journalStatus": {
+      "logged": true,
+      "tradeId": 700019
+    },
+    "postTriggerAIAnalysis": {
+      "executed": false,
+      "summary": null,
+      "error": "401 Incorrect API key provided: sk-proj-********************************************************************************************************************************************************7tUA. You can find your API key at https://platform.openai.com/account/api-keys."
+    },
+    "systemError": null,
+    "chatId": "1294526425"
+  },
+  {
+    "id": "exec_1784897981525",
+    "timestamp": "2026-07-24T12:59:38.718Z",
+    "eventSummary": "Everything Gone Well",
+    "systemStatus": "SUCCESS",
+    "preApproved": true,
+    "triggerEvent": {
+      "targetPrice": 64900,
+      "direction": "below",
+      "spotPrice": 64773.3
+    },
+    "autoTradeExecution": {
+      "status": "SUCCESS",
+      "strategy": "Bear Call Credit Spread",
+      "shortStrike": 64800,
+      "longStrike": 65800,
+      "risk": 100,
+      "reward": 25
+    },
+    "journalStatus": {
+      "logged": true,
+      "tradeId": 918908
+    },
+    "postTriggerAIAnalysis": {
+      "executed": false,
+      "summary": null,
+      "error": "401 Incorrect API key provided: sk-proj-********************************************************************************************************************************************************7tUA. You can find your API key at https://platform.openai.com/account/api-keys."
+    },
+    "systemError": null,
+    "chatId": "1294526425"
+  }
+]

@@ -1,0 +1,43 @@
+[
+  {
+    "id": "1784895406082",
+    "targetPrice": 66400,
+    "direction": "above",
+    "createdAt": "2026-07-24T12:16:46.082Z"
+  },
+  {
+    "id": "1784896021093",
+    "targetPrice": 65130,
+    "direction": "above",
+    "chatId": "1294526425",
+    "createdAt": "2026-07-24T12:27:01.093Z"
+  },
+  {
+    "id": "1784896672232",
+    "targetPrice": 65030,
+    "direction": "above",
+    "chatId": "1294526425",
+    "createdAt": "2026-07-24T12:37:52.232Z"
+  },
+  {
+    "id": "1784898294429",
+    "targetPrice": 64600,
+    "direction": "above",
+    "chatId": "1294526425",
+    "createdAt": "2026-07-24T13:04:54.429Z"
+  },
+  {
+    "id": "1784898508261",
+    "targetPrice": 64340,
+    "direction": "below",
+    "chatId": "1294526425",
+    "createdAt": "2026-07-24T13:08:28.261Z"
+  },
+  {
+    "id": "1784898535025",
+    "targetPrice": 64350,
+    "direction": "below",
+    "chatId": "1294526425",
+    "createdAt": "2026-07-24T13:08:55.025Z"
+  }
+]

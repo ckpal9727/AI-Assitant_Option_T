@@ -32,9 +32,11 @@ import {
   PenLine,
   BarChart3,
   ChevronDown,
-  ChevronUp
+  ChevronUp,
+  Bell
 } from 'lucide-react';
 import { supabase } from '../lib/supabase';
+import PriceAlertModal from '../components/PriceAlertModal';
 
 // Utility to parse currency values
 function parseCurrency(val) {
@@ -205,6 +207,7 @@ export default function Dashboard() {
   // Modals / Panels
   const [showAddModal, setShowAddModal] = useState(false);
   const [showSettingsModal, setShowSettingsModal] = useState(false);
+  const [showAlertModal, setShowAlertModal] = useState(false);
 
   // AI Chat states
   const [chatMessages, setChatMessages] = useState([
@@ -281,6 +284,13 @@ export default function Dashboard() {
         const data = await res.json();
         if (data.success && data.tickers) {
           setLiveTickers(data.tickers);
+          if (data.hasNewAutoTrade) {
+            if (hasSupabase) {
+              fetchTradesFromDB();
+            } else {
+              fetchLocalTrades();
+            }
+          }
         }
       } catch (err) {
         console.error('Failed to fetch live tickers:', err);
@@ -973,6 +983,15 @@ export default function Dashboard() {
             title="Refresh Data"
           >
             <RotateCw size={16} className={refreshingMarket ? 'animate-spin text-cyan-400' : ''} />
+          </button>
+
+          <button
+            onClick={() => setShowAlertModal(true)}
+            className="flex items-center gap-1.5 text-xs font-semibold px-3 py-2 border border-emerald-500/30 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300 rounded-lg transition cursor-pointer shadow-sm shadow-emerald-500/10"
+            title="Configure Telegram Price Alerts"
+          >
+            <Bell size={14} className="text-emerald-400 animate-pulse" />
+            <span>Telegram Alerts</span>
           </button>
 
           <button
@@ -2178,6 +2197,13 @@ export default function Dashboard() {
           </div>
         </div>
       )}
+
+      {/* MODAL 4: Price Alert Configuration */}
+      <PriceAlertModal 
+        isOpen={showAlertModal} 
+        onClose={() => setShowAlertModal(false)} 
+        currentBtcPrice={marketSummary?.btcPrice} 
+      />
     </main>
   );
 }
